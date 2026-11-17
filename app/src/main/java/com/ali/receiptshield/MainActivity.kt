@@ -8,7 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import com.ali.receiptshield.crypto.ReceiptPayload
 import com.ali.receiptshield.crypto.ReceiptSecurityManager
-import com.ali.receiptshield.databinding.ActivityMain
+import com.ali.receiptshield.databinding.ActivityMainBinding
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.common.HybridBinarizer
@@ -28,7 +28,7 @@ class MainActivity : AppCompatActivity() {
         private const val ACTION_VERIFY = 2
     }
 
-    private lateinit var binding: ActivityMain
+    private lateinit var binding: ActivityMainBinding
     private lateinit var securityManager: ReceiptSecurityManager
     private var selectedAction = ACTION_NONE
 
@@ -49,7 +49,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMain.inflate(layoutInflater)
+        binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
         securityManager = ReceiptSecurityManager(this)
@@ -105,7 +105,6 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Verifying document offline...", Toast.LENGTH_SHORT).show()
 
         CoroutineScope(Dispatchers.IO).launch {
-            // 1. Extract QR code payload text from the receipt image file
             val qrPayloadString = extractQRCodeFromFile(file)
 
             if (qrPayloadString == null) {
@@ -115,7 +114,6 @@ class MainActivity : AppCompatActivity() {
                 return@launch
             }
 
-            // 2. Deserialize payload string back into object
             val payload = ReceiptPayload.deserialize(qrPayloadString)
             if (payload == null) {
                 withContext(Dispatchers.Main) {
@@ -124,7 +122,6 @@ class MainActivity : AppCompatActivity() {
                 return@launch
             }
 
-            // 3. Verify cryptographic hash against current file
             val isValid = securityManager.verifyReceipt(file, payload)
 
             withContext(Dispatchers.Main) {
