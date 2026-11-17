@@ -1,31 +1,46 @@
 package com.ali.receiptshield
 
-import android.content.Intent
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import com.ali.receiptshield.crypto.ReceiptPayload
 import com.ali.receiptshield.crypto.ReceiptSecurityManager
 import com.ali.receiptshield.databinding.ActivityMain
+import com.google.zxing.BinaryBitmap
+import com.google.zxing.RGBLuminanceSource
+import com.google.zxing.common.HybridBinarizer
+import com.google.zxing.qrcode.QRCodeReader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.FileOutputStream
+import java.io.FileOutputStream
 
 class MainActivity : AppCompatActivity() {
 
+    companion object {
+        private const val ACTION_NONE = 0
+        private const val ACTION_STAMP = 1
+        private const val ACTION_VERIFY = 2
+    }
+
     private lateinit var binding: ActivityMain
     private lateinit var securityManager: ReceiptSecurityManager
+    private var selectedAction = ACTION_NONE
 
     private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
-            // Copy URI content to local app cache file for safe stream hashing
             val file = fileFromUri(uri)
             if (file != null) {
-                processAndStampFile(file)
+                when (selectedAction) {
+                    ACTION_STAMP -> processAndStampFile(file)
+                    ACTION_VERIFY -> processAndVerifyFile(file)
+                    else -> Toast.makeText(this, "Please select an action first", Toast.LENGTH_SHORT).show()
+                }
             } else {
                 Toast.makeText(this, "Failed to read selected file", Toast.LENGTH_SHORT).show()
             }
@@ -40,18 +55,20 @@ class MainActivity : AppCompatActivity() {
         securityManager = ReceiptSecurityManager(this)
 
         binding.btnStamp.setOnClickListener {
-            // Launch picker to select a payment screenshot or receipt
+            selectedAction = ACTION_STAMP
+            binding.ivQrPreview.visibility = View.GONE
             pickImageLauncher.launch("image/*")
         }
 
         binding.btnVerify.setOnClickListener {
-            Toast.makeText(this, "Verification scanner ready (select receipt file)", Toast.LENGTH_SHORT).show()
+            selectedAction = ACTION_VERIFY
+            binding.ivQrPreview.visibility = View.GONE
             pickImageLauncher.launch("image/*")
         }
     }
 
     private fun fileFromUri(uri: android.net.Uri): File? {
-        returntry {
+        return try {
             val inputStream = contentResolver.openInputStream(uri) ?: return null
             val tempFile = File(cacheDir, "temp_receipt.jpg")
             val outputStream = FileOutputStream(tempFile)
@@ -65,10 +82,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun processAndStampFile(file: File) {
-        Toast.init // (ignored)
         Toast.makeText(this, "Generating offline cryptographic stamp...", Toast.LENGTH_SHORT).show()
 
-        // Run heavy hashing off the UI thread using coroutines
         CoroutineScope(Dispatchers.IO).launch {
             val payload = securityManager.createStamp(file, issuerId = "SHOP_ZANZIBAR_01")
             val payloadString = payload.serialize()
@@ -83,6 +98,68 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this@MainActivity, "Error generating QR stamp", Toast.LENGTH_SHORT).show()
                 }
             }
+        }
+    }
+
+    private fun processAndVerifyFile(file: File) {
+        Toast.makeText(this, "Verifying document offline...", Toast.LENGTH_SHORT).show()
+
+        CoroutineScope(Dispatchers.IO).launch {
+            // 1. Extract QR code payload text from the receipt image file
+            val qrPayloadString = extractQRCodeFromFile(file)
+
+            if (qrPayloadString == null) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@MainActivity, "❌ Failed to find a valid QR stamp in this image", Toast.LENGTH_LONG).show()
+                }
+                return@launch
+            }
+
+            // 2. Deserialize payload string back into object
+            val payload = ReceiptPayload.deserialize(qrPayloadString)
+            if (payload == null) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@MainActivity, "❌ Invalid QR format: Unrecognized stamp", Toast.LENGTH_LONG).show()
+                }
+                return@launch
+            }
+
+            // 3. Verify cryptographic hash against current file
+            val isValid = securityManager.verifyReceipt(file, payload)
+
+            withContext(Dispatchers.Main) {
+                if (isValid) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "✅ VERIFIED AUTHENTIC! Issued by: ${payload.issuerId}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "❌ WARNING: Document has been modified or forged!",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+    }
+
+    private fun extractQRCodeFromFile(file: File): String? {
+        return try {
+            val bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: return null
+            val width = bitmap.width
+            val height = bitmap.height
+            val pixels = IntArray(width * height)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+
+            val source = RGBLuminanceSource(width, height, pixels)
+            val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
+            val reader = QRCodeReader()
+            val result = reader.decode(binaryBitmap)
+            result.text
+        } catch (e: Exception) {
+            null
         }
     }
 }
