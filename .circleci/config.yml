@@ -13,37 +13,28 @@ jobs:
       - checkout
 
       - run:
-          name: Setup Environment & Gradle Wrapper
+          name: Setup Environment & Permissions
           command: |
             export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-            if [ ! -f "gradlew" ]; then
-              gradle wrapper
-            fi
             chmod +x gradlew
-            # Clean corrupt cache states
-            rm -rf /home/circleci/.gradle/caches/transforms-4/
-            rm -rf /home/circleci/.gradle/caches/journal-1/
+            # Completely wipe old corrupted Gradle caches & wrappers
+            rm -rf /home/circleci/.gradle/caches/
+            rm -rf /home/circleci/.gradle/wrapper/
 
       - restore_cache:
-          key: android-cache-v5-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}
-
-      - run:
-          name: Resolve Android Dependencies and Tools
-          command: |
-            export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-            ./gradlew androidDependencies
-
-      - save_cache:
-          key: android-cache-v5-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}
-          paths:
-            - ~/.gradle/caches
-            - ~/.gradle/wrapper
+          key: android-cache-v6-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}
 
       - run:
           name: Build Debug APK
           command: |
             export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-            ./gradlew assembleDebug
+            ./gradlew clean assembleDebug --no-daemon
+
+      - save_cache:
+          key: android-cache-v6-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}
+          paths:
+            - ~/.gradle/caches
+            - ~/.gradle/wrapper
 
       - store_artifacts:
           path: app/build/outputs/apk/debug/app-debug.apk
