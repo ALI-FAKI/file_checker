@@ -13,16 +13,24 @@ jobs:
       - checkout
 
       - run:
-          name: Setup Environment & Permissions
+          name: Auto-Bootstrap Gradle Wrapper & Clean Caches
           command: |
             export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+            
+            # Automatically generate wrapper files on the fly if git/gitignore omitted them
+            if [ ! -f "gradlew" ]; then
+              echo "Gradle wrapper missing from checkout. Generating Gradle 8.4 wrapper..."
+              gradle wrapper --gradle-version 8.4
+            fi
+            
             chmod +x gradlew
-            # Completely wipe old corrupted Gradle caches & wrappers
-            rm -rf /home/circleci/.gradle/caches/
-            rm -rf /home/circleci/.gradle/wrapper/
+            
+            # Clean potential transform or journal cache corruption
+            rm -rf /home/circleci/.gradle/caches/transforms-4/
+            rm -rf /home/circleci/.gradle/caches/journal-1/
 
       - restore_cache:
-          key: android-cache-v6-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}
+          key: android-cache-v8-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}
 
       - run:
           name: Build Debug APK
@@ -31,7 +39,7 @@ jobs:
             ./gradlew clean assembleDebug --no-daemon
 
       - save_cache:
-          key: android-cache-v6-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}
+          key: android-cache-v8-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}
           paths:
             - ~/.gradle/caches
             - ~/.gradle/wrapper
