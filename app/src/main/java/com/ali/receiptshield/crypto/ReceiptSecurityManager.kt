@@ -4,34 +4,35 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import com.google.zxing.BarcodeFormat
-import com.google.zxing.MultiFormatWriter
+import com.google.zxing.qrcode.QRCodeWriter
 import java.io.File
 import java.security.MessageDigest
+import java.util.UUID
 
 data class ReceiptPayload(
-    val version: Int = 1,
+    val version: String,
     val issuerId: String,
-    val documentHash: String,
     val timestamp: Long,
-    val customMetadata: String? = null
+    val fileHash: String,
+    val nonce: String
 ) {
     fun serialize(): String {
-        return "RS_V$version|$issuerId|$documentHash|$timestamp"
+        return "$version|$issuerId|$timestamp|$fileHash|$nonce"
     }
 
     companion object {
-        fun deserialize(data: String): ReceiptPayload? {
+        fun deserialize(raw: String): ReceiptPayload? {
             return try {
-                val parts = data.split("|")
-                if (parts.size < 4) return null
-                if (!parts[0].startsWith("RS_V")) return null
-                val version = parts[0].removePrefix("RS_V").toInt()
-                ReceiptPayload(
-                    version = version,
-                    issuerId = parts[1],
-                    documentHash = parts[2],
-                    timestamp = parts[3].toLong()
-                )
+                val parts = raw.split("|")
+                if (parts.size == 5 && parts[0] == "RS_V1") {
+                    ReceiptPayload(
+                        version = parts[0],
+                        issuerId = parts[1],
+                        timestamp = parts[2].toLong(),
+                        fileHash = parts[3],
+                        nonce = parts[4]
+                    )
+                } else null
             } catch (e: Exception) {
                 null
             }
@@ -41,12 +42,10 @@ data class ReceiptPayload(
 
 class ReceiptSecurityManager(private val context: Context) {
 
-    companion object {
-        const val CURRENT_SCHEMA_VERSION = 1
-    }
-
-    // Efficient Offline Chunked SHA-256 Hashing (Low RAM Footprint)
-    fun generateFileHash(file: File): String {
+    /**
+     * Computes a SHA-256 hash of the file using chunked streaming for memory efficiency.
+     */
+    fun computeFileHash(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input ->
             val buffer = ByteArray(8192)
@@ -59,29 +58,36 @@ class ReceiptSecurityManager(private val context: Context) {
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    // Create Stamp Payload
+    /**
+     * Creates a cryptographic receipt stamp payload.
+     */
     fun createStamp(file: File, issuerId: String): ReceiptPayload {
-        val fileHash = generateFileHash(file)
+        val fileHash = computeFileHash(file)
         return ReceiptPayload(
-            version = CURRENT_SCHEMA_VERSION,
+            version = "RS_V1",
             issuerId = issuerId,
-            documentHash = fileHash,
             timestamp = System.currentTimeMillis(),
-            customMetadata = "local_verified"
+            fileHash = fileHash,
+            nonce = UUID.randomUUID().toString().substring(0, 8)
         )
     }
 
-    // Verify Receipt Offline
-    fun verifyReceipt(file: File, scannedPayload: ReceiptPayload): Boolean {
-        if (scannedPayload.version > CURRENT_SCHEMA_VERSION) return false
-        val currentFileHash = generateFileHash(file)
-        return currentFileHash == scannedPayload.documentHash
+    /**
+     * Verifies if the file matches the embedded payload hash.
+     */
+    fun verifyReceipt(file: File, payload: ReceiptPayload): Boolean {
+        if (payload.version != "RS_V1") return false
+        val currentFileHash = computeFileHash(file)
+        return currentFileHash.equals(payload.fileHash, ignoreCase = true)
     }
 
-    // Generate QR Code Bitmap Locally via ZXing
+    /**
+     * Generates a ZXing QR code Bitmap from serialized payload string.
+     */
     fun generateQRCodeBitmap(content: String, width: Int = 512, height: Int = 512): Bitmap? {
         return try {
-            val bitMatrix = MultiFormatWriter().encode(content, BarcodeFormat.QR_CODE, width, height)
+            val writer = QRCodeWriter()
+            val bitMatrix = writer.encode(content, BarcodeFormat.QR_CODE, width, height)
             val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
             for (x in 0 until width) {
                 for (y in 0 until height) {
