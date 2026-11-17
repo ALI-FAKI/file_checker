@@ -13,28 +13,28 @@ jobs:
       - checkout
 
       - run:
-          name: Setup Gradle Wrapper & Clean Caches
+          name: Setup Environment & Gradle Wrapper
           command: |
             export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
             if [ ! -f "gradlew" ]; then
               gradle wrapper
             fi
             chmod +x gradlew
-            # Clean transforms and journal cache to prevent EOF exceptions
+            # Clean corrupt cache states
             rm -rf /home/circleci/.gradle/caches/transforms-4/
             rm -rf /home/circleci/.gradle/caches/journal-1/
 
       - restore_cache:
-          key: android-cache-v4-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}
+          key: android-cache-v5-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}
 
       - run:
-          name: Download Dependencies
+          name: Resolve Android Dependencies and Tools
           command: |
             export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-            ./gradlew dependencies
+            ./gradlew androidDependencies
 
       - save_cache:
-          key: android-cache-v4-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}
+          key: android-cache-v5-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}
           paths:
             - ~/.gradle/caches
             - ~/.gradle/wrapper
@@ -43,7 +43,7 @@ jobs:
           name: Build Debug APK
           command: |
             export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-            ./gradlew clean assembleDebug
+            ./gradlew assembleDebug
 
       - store_artifacts:
           path: app/build/outputs/apk/debug/app-debug.apk
