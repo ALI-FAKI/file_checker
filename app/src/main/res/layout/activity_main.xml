@@ -1,101 +1,329 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout 
+<androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:padding="24dp"
-    android:background="#F8F9FA">
+    android:background="#F4F6F9">
 
-    <TextView
-        android:id="@+id/titleText"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="ReceiptShield"
-        android:textColor="#202124"
-        android:textSize="32sp"
-        android:textStyle="bold"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
-
-    <TextView
-        android:id="@+id/subtitleText"
+    <!-- Top Header -->
+    <LinearLayout
+        android:id="@+id/headerBar"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:gravity="center"
-        android:text="100% Offline Cryptographic Document Verification"
-        android:textColor="#5F6368"
-        android:textSize="14sp"
+        android:background="#FFFFFF"
+        android:elevation="2dp"
+        android:orientation="vertical"
+        android:paddingHorizontal="20dp"
+        android:paddingTop="18dp"
+        android:paddingBottom="14dp"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/titleText" />
+        app:layout_constraintTop_toTopOf="parent">
 
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/btnCreateStamp"
+        <TextView
+            android:id="@+id/titleText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="ReceiptShield"
+            android:textColor="#1A1C1E"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/subtitleText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="Offline Cryptographic Document Verification"
+            android:textColor="#5F6368"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <!-- Scrollable Content Area -->
+    <ScrollView
+        android:id="@+id/scrollContent"
         android:layout_width="0dp"
-        android:layout_height="60dp"
-        android:layout_marginTop="32dp"
-        android:text="Create Verified Stamp"
-        android:textSize="16sp"
-        android:textStyle="bold"
-        app:backgroundTint="#1A73E8"
-        app:cornerRadius="12dp"
+        android:layout_height="0dp"
+        android:fillViewport="true"
+        android:padding="16dp"
+        app:layout_constraintBottom_toTopOf="@id/bottomNav"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/subtitleText" />
+        app:layout_constraintTop_toBottomOf="@id/headerBar">
 
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/btnVerifyDoc"
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <!-- SECTION 1: CREATE STAMP -->
+            <LinearLayout
+                android:id="@+id/sectionStamp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="visible">
+
+                <TextView
+                    android:id="@+id/tvActiveIssuerBadge"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="#E8F0FE"
+                    android:padding="12dp"
+                    android:text="Active Issuer: SHOP_ZANZIBAR_01"
+                    android:textColor="#1967D2"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnCreateStamp"
+                    android:layout_width="match_parent"
+                    android:layout_height="56dp"
+                    android:layout_marginTop="14dp"
+                    android:text="Select File &amp; Create Stamp"
+                    android:textAllCaps="false"
+                    android:textColor="#FFFFFF"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#1A73E8"
+                    app:cornerRadius="12dp" />
+
+                <ProgressBar
+                    android:id="@+id/progressBar"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_horizontal"
+                    android:layout_marginTop="18dp"
+                    android:visibility="gone" />
+
+                <ImageView
+                    android:id="@+id/ivQrPreview"
+                    android:layout_width="240dp"
+                    android:layout_height="240dp"
+                    android:layout_gravity="center_horizontal"
+                    android:layout_marginTop="18dp"
+                    android:background="#FFFFFF"
+                    android:padding="10dp"
+                    android:scaleType="fitCenter"
+                    android:visibility="gone" />
+
+                <!-- QR Action Buttons -->
+                <LinearLayout
+                    android:id="@+id/qrActionsRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:gravity="center"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnSaveQr"
+                        android:layout_width="0dp"
+                        android:layout_height="48dp"
+                        android:layout_marginEnd="6dp"
+                        android:layout_weight="1"
+                        android:text="Save QR"
+                        android:textAllCaps="false"
+                        android:textColor="#0F9D58"
+                        android:textStyle="bold"
+                        app:backgroundTint="#FFFFFF"
+                        app:cornerRadius="10dp"
+                        app:rippleColor="#1A0F9D58"
+                        app:strokeColor="#0F9D58"
+                        app:strokeWidth="1.5dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnShareQr"
+                        android:layout_width="0dp"
+                        android:layout_height="48dp"
+                        android:layout_marginStart="6dp"
+                        android:layout_weight="1"
+                        android:text="Share QR"
+                        android:textAllCaps="false"
+                        android:textColor="#1A73E8"
+                        android:textStyle="bold"
+                        app:backgroundTint="#FFFFFF"
+                        app:cornerRadius="10dp"
+                        app:rippleColor="#1A1A73E8"
+                        app:strokeColor="#1A73E8"
+                        app:strokeWidth="1.5dp" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tvStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:background="#FFFFFF"
+                    android:padding="16dp"
+                    android:text="Choose a document or image to generate a verification QR stamp."
+                    android:textColor="#3C4043"
+                    android:textSize="15sp" />
+            </LinearLayout>
+
+            <!-- SECTION 2: VERIFY DOCUMENT -->
+            <LinearLayout
+                android:id="@+id/sectionVerify"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="#FFFFFF"
+                    android:padding="14dp"
+                    android:text="1. Pick the receipt/document file.\n2. Pick the QR code image to verify authenticity."
+                    android:textColor="#3C4043"
+                    android:textSize="14sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnVerifyDoc"
+                    android:layout_width="match_parent"
+                    android:layout_height="56dp"
+                    android:layout_marginTop="14dp"
+                    android:text="Start Document Verification"
+                    android:textAllCaps="false"
+                    android:textColor="#FFFFFF"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#0F9D58"
+                    app:cornerRadius="12dp" />
+
+                <TextView
+                    android:id="@+id/tvVerifyStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:background="#FFFFFF"
+                    android:padding="16dp"
+                    android:text="No verification run yet."
+                    android:textColor="#3C4043"
+                    android:textSize="15sp" />
+            </LinearLayout>
+
+            <!-- SECTION 3: STAMPED FILES HISTORY -->
+            <LinearLayout
+                android:id="@+id/sectionHistory"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Stamped Files History"
+                        android:textColor="#1A1C1E"
+                        android:textSize="18sp"
+                        android:textStyle="bold" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnClearHistory"
+                        android:layout_width="wrap_content"
+                        android:layout_height="40dp"
+                        android:text="Clear All"
+                        android:textAllCaps="false"
+                        android:textColor="#D93025"
+                        android:textSize="13sp"
+                        app:backgroundTint="#FFFFFF"
+                        app:cornerRadius="8dp"
+                        app:strokeColor="#D93025"
+                        app:strokeWidth="1dp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/historyContainer"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:orientation="vertical" />
+            </LinearLayout>
+
+            <!-- SECTION 4: ISSUER SETTINGS -->
+            <LinearLayout
+                android:id="@+id/sectionSettings"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#FFFFFF"
+                android:orientation="vertical"
+                android:padding="16dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Issuer / Shop ID"
+                    android:textColor="#1A1C1E"
+                    android:textSize="17sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Included inside every generated QR stamp."
+                    android:textColor="#5F6368"
+                    android:textSize="13sp" />
+
+                <EditText
+                    android:id="@+id/etIssuerId"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="12dp"
+                    android:background="@android:drawable/edit_text"
+                    android:hint="e.g. SHOP_ZANZIBAR_01"
+                    android:inputType="text"
+                    android:paddingHorizontal="12dp"
+                    android:textColor="#1A1C1E"
+                    android:textSize="15sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnSaveIssuer"
+                    android:layout_width="match_parent"
+                    android:layout_height="50dp"
+                    android:layout_marginTop="12dp"
+                    android:text="Save Issuer ID"
+                    android:textAllCaps="false"
+                    android:textColor="#FFFFFF"
+                    android:textStyle="bold"
+                    app:backgroundTint="#1A73E8"
+                    app:cornerRadius="10dp" />
+
+                <TextView
+                    android:id="@+id/tvIssuerSavedMsg"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textColor="#0F9D58"
+                    android:textSize="14sp" />
+            </LinearLayout>
+
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- Bottom Navigation Menu -->
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottomNav"
         android:layout_width="0dp"
-        android:layout_height="60dp"
-        android:layout_marginTop="12dp"
-        android:text="Verify Document"
-        android:textSize="16sp"
-        android:textStyle="bold"
-        android:textColor="#0F9D58"
-        app:backgroundTint="@android:color/transparent"
-        app:cornerRadius="12dp"
-        app:iconTint="#0F9D58"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/btnCreateStamp"
-        app:strokeColor="#0F9D58"
-        app:strokeWidth="2dp" />
-
-    <ProgressBar
-        android:id="@+id/progressBar"
-        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginTop="24dp"
-        android:visibility="gone"
+        android:background="#FFFFFF"
+        app:itemIconTint="#1A73E8"
+        app:itemTextColor="#1A73E8"
+        app:labelVisibilityMode="labeled"
+        app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/btnVerifyDoc" />
-
-    <ImageView
-        android:id="@+id/ivQrPreview"
-        android:layout_width="250dp"
-        android:layout_height="250dp"
-        android:layout_marginTop="24dp"
-        android:scaleType="fitCenter"
-        android:visibility="gone"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/progressBar" />
-
-    <TextView
-        android:id="@+id/tvStatus"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="24dp"
-        android:gravity="center"
-        android:text="Select an action to begin."
-        android:textColor="#3C4043"
-        android:textSize="16sp"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/ivQrPreview" />
+        app:menu="@menu/bottom_nav_menu" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
