@@ -4,7 +4,10 @@ executors:
   android-executor:
     docker:
       - image: cimg/android:2024.04-node
-    resource_class: large          # was: medium (4 GB → 8 GB). THIS is the fix.
+    resource_class: large
+    environment:
+      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+      GRADLE_OPTS: "-Dorg.gradle.daemon=false"
 
 jobs:
   build-and-test:
@@ -15,25 +18,26 @@ jobs:
       - run:
           name: Auto-Bootstrap Gradle Wrapper
           command: |
-            export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
             if [ ! -f "gradlew" ]; then
-              gradle wrapper --gradle-version 8.4
+              gradle wrapper --gradle-version 8.4 --no-daemon
             fi
             chmod +x gradlew
 
       - restore_cache:
           keys:
-            - android-cache-v10-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}-{{ checksum "gradle.properties" }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}
-            - android-cache-v10-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}
+            - android-cache-v11-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}-{{ checksum "gradle.properties" }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}
+            - android-cache-v11-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}
 
       - run:
           name: Build Debug APK
-          command: |
-            export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-            ./gradlew assembleDebug --stacktrace
+          command: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - run:
+          name: Remove Gradle Lock Files Before Caching
+          command: find ~/.gradle/caches -name "*.lock" -type f -delete || true
 
       - save_cache:
-          key: android-cache-v10-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}-{{ checksum "gradle.properties" }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}
+          key: android-cache-v11-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}-{{ checksum "gradle.properties" }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}
           paths:
             - ~/.gradle/caches
             - ~/.gradle/wrapper
