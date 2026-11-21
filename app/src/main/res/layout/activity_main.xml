@@ -48,7 +48,6 @@
 
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btnVerifyDoc"
-        style="@style/Widget.Material3.Button.OutlinedButton"
         android:layout_width="0dp"
         android:layout_height="60dp"
         android:layout_marginTop="12dp"
@@ -56,6 +55,7 @@
         android:textSize="16sp"
         android:textStyle="bold"
         android:textColor="#0F9D58"
+        app:backgroundTint="@android:color/transparent"
         app:cornerRadius="12dp"
         app:iconTint="#0F9D58"
         app:layout_constraintEnd_toEndOf="parent"
