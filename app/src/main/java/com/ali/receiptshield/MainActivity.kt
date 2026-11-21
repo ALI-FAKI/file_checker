@@ -1,7 +1,8 @@
-
 package com.ali.receiptshield
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -17,7 +18,9 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.ali.receiptshield.crypto.ReceiptPayload
 import com.ali.receiptshield.crypto.ReceiptSecurityManager
 import com.ali.receiptshield.data.StampRepository
 import com.ali.receiptshield.data.StampedRecord
@@ -29,7 +32,6 @@ import com.google.android.material.button.MaterialButton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -59,10 +61,19 @@ class MainActivity : AppCompatActivity() {
         }
 
     // Select a stamped file to verify.
-    // No second QR picker is needed.
     private val pickFileToVerify =
         registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
             uri?.let { runVerification(it) }
+        }
+
+    // NEW: Camera Launcher for QR Scanning
+    private val takePictureLauncher =
+        registerForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+            if (bitmap != null) {
+                processCameraScan(bitmap)
+            } else {
+                Toast.makeText(this, "Camera cancelled", Toast.LENGTH_SHORT).show()
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -174,6 +185,15 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnVerifyDoc.setOnClickListener {
             pickFileToVerify.launch("*/*")
+        }
+
+        // NEW: Camera Scan Button Logic
+        binding.btnScanQrCamera.setOnClickListener {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.CAMERA), 100)
+            } else {
+                takePictureLauncher.launch(null)
+            }
         }
 
         binding.btnSaveStampedFile.setOnClickListener {
@@ -494,9 +514,10 @@ class MainActivity : AppCompatActivity() {
             isDither = true
         }
 
-        val qrSize = (result.width.coerceAtMost(result.height) * 0.25f)
-            .coerceAtLeast(100f)
-            .coerceAtMost(400f)
+        // FIX: Reduced size to 15% of the smallest dimension
+        val qrSize = (result.width.coerceAtMost(result.height) * 0.15f)
+            .coerceAtLeast(80f)
+            .coerceAtMost(250f)
 
         val margin = (result.width.coerceAtMost(result.height) * 0.03f)
             .coerceAtLeast(12f)
@@ -543,41 +564,63 @@ class MainActivity : AppCompatActivity() {
     // ---------------------------------------------------------
 
     private fun runVerification(fileUri: Uri) {
-
         lifecycleScope.launch {
-
             binding.progressBar.visibility = View.VISIBLE
-
-            binding.tvVerifyStatus.setTextColor(
-                Color.parseColor("#3C4043")
-            )
-
-            binding.tvVerifyStatus.text =
-                "Reading QR code and checking file..."
+            binding.tvVerifyStatus.setTextColor(Color.parseColor("#3C4043"))
+            binding.tvVerifyStatus.text = "Reading QR code and checking file..."
 
             try {
                 val fileName = fileHelper.getFileName(fileUri)
-
-                val outcome = verificationHelper.verifyStampedFile(
-                    fileUri,
-                    fileName
-                )
+                val outcome = verificationHelper.verifyStampedFile(fileUri, fileName)
 
                 binding.progressBar.visibility = View.GONE
-
                 binding.tvVerifyStatus.setTextColor(outcome.color)
-                binding.tvVerifyStatus.text =
-                    "${outcome.title}\n\n${outcome.message}"
+                binding.tvVerifyStatus.text = "${outcome.title}\n\n${outcome.message}"
 
             } catch (e: Exception) {
-
                 binding.progressBar.visibility = View.GONE
-
                 binding.tvVerifyStatus.setTextColor(Color.RED)
-
-                binding.tvVerifyStatus.text =
-                    "Verification Failed:\n${e.message}"
+                binding.tvVerifyStatus.text = "Verification Failed:\n${e.message}"
             }
+        }
+    }
+
+    // NEW: PROCESS CAMERA SCAN
+    private fun processCameraScan(bitmap: Bitmap) {
+        lifecycleScope.launch {
+            binding.progressBar.visibility = View.VISIBLE
+            binding.tvVerifyStatus.setTextColor(Color.parseColor("#3C4043"))
+            binding.tvVerifyStatus.text = "Scanning QR code from camera..."
+
+            val payloadString = withContext(Dispatchers.Default) {
+                securityManager.decodeQRCode(bitmap)
+            }
+
+            binding.progressBar.visibility = View.GONE
+
+            if (payloadString.isNullOrBlank()) {
+                binding.tvVerifyStatus.setTextColor(Color.RED)
+                binding.tvVerifyStatus.text = "❌ No ReceiptShield QR code found in the image."
+                return@launch
+            }
+
+            val payload = ReceiptPayload.deserialize(payloadString)
+            if (payload == null) {
+                binding.tvVerifyStatus.setTextColor(Color.RED)
+                binding.tvVerifyStatus.text = "❌ Invalid QR format. This is not a ReceiptShield stamp."
+                return@launch
+            }
+
+            // Show the results of the scan
+            binding.tvVerifyStatus.setTextColor(Color.parseColor("#0F9D58"))
+            binding.tvVerifyStatus.text = """
+                ✅ VALID STAMP DETECTED
+                
+                Issuer ID: ${payload.issuerId}
+                Issued: ${dateFormatter.format(Date(payload.timestamp))}
+                
+                Note: Camera scans verify the Issuer and Date. To verify file integrity, please use the "Pick File to Verify" button.
+            """.trimIndent()
         }
     }
 
