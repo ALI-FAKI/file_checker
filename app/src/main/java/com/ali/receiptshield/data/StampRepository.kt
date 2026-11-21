@@ -8,10 +8,11 @@ data class StampedRecord(
     val displayName: String,
     val outputFilePath: String,
     val mimeType: String,
-    val isImageStamp: Boolean,
+    val isDocumentStamp: Boolean,
     val hash: String,
     val issuerId: String,
-    val timestamp: Long
+    val timestamp: Long,
+    val payloadSerialized: String
 )
 
 class StampRepository(context: Context) {
@@ -38,10 +39,11 @@ class StampRepository(context: Context) {
                 put("displayName", item.displayName)
                 put("outputFilePath", item.outputFilePath)
                 put("mimeType", item.mimeType)
-                put("isImageStamp", item.isImageStamp)
+                put("isDocumentStamp", item.isDocumentStamp)
                 put("hash", item.hash)
                 put("issuerId", item.issuerId)
                 put("timestamp", item.timestamp)
+                put("payloadSerialized", item.payloadSerialized)
             })
         }
         prefs.edit().putString("stamped_records", array.toString()).apply()
@@ -59,10 +61,11 @@ class StampRepository(context: Context) {
                         displayName = obj.optString("displayName", "Unknown"),
                         outputFilePath = obj.optString("outputFilePath", ""),
                         mimeType = obj.optString("mimeType", "*/*"),
-                        isImageStamp = obj.optBoolean("isImageStamp", false),
+                        isDocumentStamp = obj.optBoolean("isDocumentStamp", false),
                         hash = obj.optString("hash", ""),
                         issuerId = obj.optString("issuerId", "SHOP_ZANZIBAR_01"),
-                        timestamp = obj.optLong("timestamp", 0L)
+                        timestamp = obj.optLong("timestamp", 0L),
+                        payloadSerialized = obj.optString("payloadSerialized", "")
                     )
                 )
             }
@@ -70,6 +73,11 @@ class StampRepository(context: Context) {
         } catch (_: Exception) {
             emptyList()
         }
+    }
+
+    fun findRecordByHash(hash: String): StampedRecord? {
+        if (hash.isBlank()) return null
+        return loadRecords().firstOrNull { it.hash.equals(hash, ignoreCase = true) }
     }
 
     fun clearRecords() {
