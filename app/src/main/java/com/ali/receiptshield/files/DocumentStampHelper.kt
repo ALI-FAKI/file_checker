@@ -51,8 +51,9 @@ class DocumentStampHelper(
                 qrBitmap
             )
 
-            val qrSize = 110f
-            val margin = 36f
+            // FIX: Reduced size from 110f to 60f and margin from 36f to 24f
+            val qrSize = 60f
+            val margin = 24f
 
             val x = (pageBox.width - qrSize - margin).coerceAtLeast(0f)
             val y = margin
@@ -100,10 +101,6 @@ class DocumentStampHelper(
 
         val relationshipPath = "word/_rels/document.xml.rels"
 
-        // FIX: Convert ByteArray to String BEFORE the elvis operator.
-        // Without .toString(Charsets.UTF_8), the fallback is a String,
-        // and the common supertype of ByteArray? and String is Serializable,
-        // which caused the type mismatch at the call sites below.
         val relationshipsXml = entries[relationshipPath]
             ?.toString(Charsets.UTF_8)
             ?: """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -185,7 +182,8 @@ class DocumentStampHelper(
     <w:r>
         <w:drawing>
             <wp:inline distT="0" distB="0" distL="0" distR="0">
-                <wp:extent cx="1047750" cy="1047750"/>
+                <!-- FIX: Changed extent from 1047750 to 600000 to make it smaller -->
+                <wp:extent cx="600000" cy="600000"/>
                 <wp:docPr id="9001" name="ReceiptShield QR Code"/>
                 <wp:cNvGraphicFramePr/>
                 <a:graphic>
@@ -204,7 +202,8 @@ class DocumentStampHelper(
                             <pic:spPr>
                                 <a:xfrm>
                                     <a:off x="0" y="0"/>
-                                    <a:ext cx="1047750" cy="1047750"/>
+                                    <!-- FIX: Changed extent from 1047750 to 600000 -->
+                                    <a:ext cx="600000" cy="600000"/>
                                 </a:xfrm>
                                 <a:prstGeom prst="rect">
                                     <a:avLst/>
