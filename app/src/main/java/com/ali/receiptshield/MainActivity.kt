@@ -1,48 +1,51 @@
 package com.ali.receiptshield
 
 import android.graphics.BitmapFactory
+import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import com.ali.receiptshield.crypto.ReceiptPayload
 import com.ali.receiptshield.crypto.ReceiptSecurityManager
 import com.ali.receiptshield.databinding.ActivityMainBinding
-import com.google.zxing.BinaryBitmap
-import com.google.zxing.RGBLuminanceSource
-import com.google.zxing.common.HybridBinarizer
-import com.google.zxing.qrcode.QRCodeReader
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.io.FileOutputStream
+import java.util.Date
 
 class MainActivity : AppCompatActivity() {
 
-    companion object {
-        private const val ACTION_NONE = 0
-        private const val ACTION_STAMP = 1
-        private const val ACTION_VERIFY = 2
-    }
-
     private lateinit var binding: ActivityMainBinding
     private lateinit var securityManager: ReceiptSecurityManager
-    private var selectedAction = ACTION_NONE
 
-    private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) {
-            val file = fileFromUri(uri)
-            if (file != null) {
-                when (selectedAction) {
-                    ACTION_STAMP -> processAndStampFile(file)
-                    ACTION_VERIFY -> processAndVerifyFile(file)
-                    else -> Toast.makeText(this, "Please select an action first", Toast.LENGTH_SHORT).show()
-                }
-            } else {
-                Toast.makeText(this, "Failed to read selected file", Toast.LENGTH_SHORT).show()
+    // State for verification flow
+    private var pendingVerifyFileUri: Uri? = null
+
+    // 1. Pick file to generate a stamp
+    private val pickFileForStamp = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let { processStampCreation(it) }
+    }
+
+    // 2. Pick file to verify
+    private val pickFileToVerify = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let {
+            pendingVerifyFileUri = it
+            binding.tvStatus.text = "File selected: ${getFileName(it)}\n\nNow select the QR Code image to verify against."
+            binding.tvStatus.setTextColor(Color.parseColor("#3C4043"))
+            pickQrToVerify.launch("image/*")
+        }
+    }
+
+    // 3. Pick the QR code image to verify against
+    private val pickQrToVerify = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let { qrUri ->
+            pendingVerifyFileUri?.let { fileUri ->
+                performVerification(fileUri, qrUri)
             }
         }
     }
@@ -52,111 +55,128 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        securityManager = ReceiptSecurityManager(this)
+        securityManager = ReceiptSecurityManager()
 
-        binding.btnStamp.setOnClickListener {
-            selectedAction = ACTION_STAMP
-            binding.ivQrPreview.visibility = View.GONE
-            pickImageLauncher.launch("image/*")
+        binding.btnCreateStamp.setOnClickListener {
+            pickFileForStamp.launch("*/*")
         }
 
-        binding.btnVerify.setOnClickListener {
-            selectedAction = ACTION_VERIFY
-            binding.ivQrPreview.visibility = View.GONE
-            pickImageLauncher.launch("image/*")
+        binding.btnVerifyDoc.setOnClickListener {
+            pickFileToVerify.launch("*/*")
         }
     }
 
-    private fun fileFromUri(uri: android.net.Uri): File? {
-        return try {
-            val inputStream = contentResolver.openInputStream(uri) ?: return null
-            val tempFile = File(cacheDir, "temp_receipt.jpg")
-            val outputStream = FileOutputStream(tempFile)
-            inputStream.copyTo(outputStream)
-            inputStream.close()
-            outputStream.close()
-            tempFile
-        } catch (e: Exception) {
-            null
-        }
-    }
+    private fun processStampCreation(fileUri: Uri) {
+        lifecycleScope.launch {
+            showLoading(true, "Hashing file...")
+            try {
+                val fileName = getFileName(fileUri)
+                val inputStream = contentResolver.openInputStream(fileUri)
+                
+                // Hash file
+                val hash = withContext(Dispatchers.IO) {
+                    securityManager.hashInputStream(inputStream ?: throw Exception("Cannot open file"))
+                }
+                inputStream?.close()
 
-    private fun processAndStampFile(file: File) {
-        Toast.makeText(this, "Generating offline cryptographic stamp...", Toast.LENGTH_SHORT).show()
+                showLoading(true, "Generating QR Code...")
+                val payload = securityManager.createStamp(hash, "SHOP_ZANZIBAR_01")
+                val payloadString = payload.serialize()
 
-        CoroutineScope(Dispatchers.IO).launch {
-            val payload = securityManager.createStamp(file, issuerId = "SHOP_ZANZIBAR_01")
-            val payloadString = payload.serialize()
-            val qrBitmap = securityManager.generateQRCodeBitmap(payloadString)
+                // Generate QR
+                val qrBitmap = withContext(Dispatchers.Default) {
+                    securityManager.generateQRCodeBitmap(payloadString)
+                }
 
-            withContext(Dispatchers.Main) {
-                if (qrBitmap != null) {
-                    binding.ivQrPreview.visibility = View.VISIBLE
+                withContext(Dispatchers.Main) {
                     binding.ivQrPreview.setImageBitmap(qrBitmap)
-                    Toast.makeText(this@MainActivity, "Stamp Generated Successfully (Offline)!", Toast.LENGTH_LONG).show()
-                } else {
-                    Toast.makeText(this@MainActivity, "Error generating QR stamp", Toast.LENGTH_SHORT).show()
+                    binding.ivQrPreview.visibility = View.VISIBLE
+                    binding.tvStatus.setTextColor(Color.parseColor("#0F9D58"))
+                    binding.tvStatus.text = "✅ Stamp Created!\n\nFile: $fileName\n\nHash: ${hash.take(16)}...\nIssuer: ${payload.issuerId}\nDate: ${Date(payload.timestamp)}"
+                    showLoading(false, null)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    binding.tvStatus.setTextColor(Color.RED)
+                    showLoading(false, "Error: ${e.message}")
                 }
             }
         }
     }
 
-    private fun processAndVerifyFile(file: File) {
-        Toast.makeText(this, "Verifying document offline...", Toast.LENGTH_SHORT).show()
+    private fun performVerification(fileUri: Uri, qrUri: Uri) {
+        lifecycleScope.launch {
+            showLoading(true, "Verifying Document...")
+            try {
+                val fileName = getFileName(fileUri)
 
-        CoroutineScope(Dispatchers.IO).launch {
-            val qrPayloadString = extractQRCodeFromFile(file)
+                // 1. Decode QR Image
+                val qrInputStream = contentResolver.openInputStream(qrUri)
+                val qrBitmap = BitmapFactory.decodeStream(qrInputStream)
+                qrInputStream?.close()
+                
+                val payloadString = withContext(Dispatchers.Default) {
+                    securityManager.decodeQRCode(qrBitmap ?: throw Exception("Cannot read QR Image"))
+                } ?: throw Exception("No valid QR code found in the selected image.")
 
-            if (qrPayloadString == null) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(this@MainActivity, "❌ Failed to find a valid QR stamp in this image", Toast.LENGTH_LONG).show()
+                val payload = ReceiptPayload.deserialize(payloadString)
+                    ?: throw Exception("Invalid ReceiptShield payload format.")
+
+                // 2. Hash the original document
+                val fileInputStream = contentResolver.openInputStream(fileUri)
+                val liveHash = withContext(Dispatchers.IO) {
+                    securityManager.hashInputStream(fileInputStream ?: throw Exception("Cannot open file"))
                 }
-                return@launch
-            }
+                fileInputStream?.close()
 
-            val payload = ReceiptPayload.deserialize(qrPayloadString)
-            if (payload == null) {
+                // 3. Compare Hashes
+                val isAuthentic = securityManager.verifyHash(liveHash, payload)
+
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(this@MainActivity, "❌ Invalid QR format: Unrecognized stamp", Toast.LENGTH_LONG).show()
+                    binding.ivQrPreview.visibility = View.GONE
+                    if (isAuthentic) {
+                        binding.tvStatus.setTextColor(Color.parseColor("#0F9D58")) // Green
+                        binding.tvStatus.text = "✅ AUTHENTIC\n\nFile: $fileName\n\nThis document matches the original stamp perfectly.\n\nIssuer: ${payload.issuerId}\nDate: ${Date(payload.timestamp)}"
+                    } else {
+                        binding.tvStatus.setTextColor(Color.RED)
+                        binding.tvStatus.text = "❌ TAMPERED / FORGED\n\nFile: $fileName\n\nHash mismatch! This document has been modified since the stamp was created.\n\nExpected: ${payload.fileHash.take(16)}...\nActual: ${liveHash.take(16)}..."
+                    }
+                    showLoading(false, null)
                 }
-                return@launch
-            }
-
-            val isValid = securityManager.verifyReceipt(file, payload)
-
-            withContext(Dispatchers.Main) {
-                if (isValid) {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "✅ VERIFIED AUTHENTIC! Issued by: ${payload.issuerId}",
-                        Toast.LENGTH_LONG
-                    ).show()
-                } else {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "❌ WARNING: Document has been modified or forged!",
-                        Toast.LENGTH_LONG
-                    ).show()
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    binding.tvStatus.setTextColor(Color.RED)
+                    showLoading(false, "Verification Failed:\n${e.message}")
                 }
             }
         }
     }
 
-    private fun extractQRCodeFromFile(file: File): String? {
-        return try {
-            val bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: return null
-            val width = bitmap.width
-            val height = bitmap.height
-            val pixels = IntArray(width * height)
-            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+    private fun showLoading(isLoading: Boolean, message: String?) {
+        binding.progressBar.visibility = if (isLoading) View.VISIBLE else View.GONE
+        if (message != null) binding.tvStatus.text = message
+    }
 
-            val source = RGBLuminanceSource(width, height, pixels)
-            val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
-            val reader = QRCodeReader()
-            val result = reader.decode(binaryBitmap)
-            result.text
-        } catch (e: Exception) {
-            null
+    private fun getFileName(uri: Uri): String {
+        var result: String? = null
+        if (uri.scheme == "content") {
+            val cursor = contentResolver.query(uri, null, null, null, null)
+            try {
+                if (cursor != null && cursor.moveToFirst()) {
+                    val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (index != -1) result = cursor.getString(index)
+                }
+            } finally {
+                cursor?.close()
+            }
         }
+        if (result == null) {
+            result = uri.path
+            val cut = result?.lastIndexOf('/')
+            if (cut != null && cut != -1) {
+                result = result.substring(cut + 1)
+            }
+        }
+        return result ?: "Unknown File"
     }
 }
