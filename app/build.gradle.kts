@@ -45,6 +45,9 @@ dependencies {
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.activity:activity-ktx:1.8.2")
 
+    // REQUIRED: Provides lifecycleScope for safe Coroutine execution in MainActivity
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+
     // ZXing for Offline QR Code Generation & Parsing
     implementation("com.google.zxing:core:3.5.3")
 
