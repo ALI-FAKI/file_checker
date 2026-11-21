@@ -1,5 +1,3 @@
-
-
 package com.ali.receiptshield.files
 
 import android.content.Context
@@ -102,10 +100,15 @@ class DocumentStampHelper(
 
         val relationshipPath = "word/_rels/document.xml.rels"
 
+        // FIX: Convert ByteArray to String BEFORE the elvis operator.
+        // Without .toString(Charsets.UTF_8), the fallback is a String,
+        // and the common supertype of ByteArray? and String is Serializable,
+        // which caused the type mismatch at the call sites below.
         val relationshipsXml = entries[relationshipPath]
+            ?.toString(Charsets.UTF_8)
             ?: """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>"""
-        
+
         val imagePath = "word/media/receiptshield_qr.png"
         val relationshipId = nextRelationshipId(relationshipsXml)
 
