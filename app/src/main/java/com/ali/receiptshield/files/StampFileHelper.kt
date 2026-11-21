@@ -8,6 +8,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -20,9 +21,9 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
-import kotlin.math.max
-import kotlin.math.min
 
 class StampFileHelper(private val context: Context) {
 
@@ -51,54 +52,142 @@ class StampFileHelper(private val context: Context) {
         return "*/*"
     }
 
+    fun isPdfFile(fileName: String, mimeType: String): Boolean {
+        return mimeType.equals("application/pdf", ignoreCase = true) ||
+            fileName.lowercase(Locale.getDefault()).endsWith(".pdf")
+    }
+
     fun createStampsDirectory(): File {
         val dir = File(context.filesDir, "stamps")
         if (!dir.exists()) dir.mkdirs()
         return dir
     }
 
-    fun overlayQrOntoImage(source: Bitmap, qr: Bitmap, issuerId: String): Bitmap {
-        val mutable = source.copy(Bitmap.Config.ARGB_8888, true)
-        val canvas = Canvas(mutable)
+    /**
+     * Creates a stamped PDF containing a verification page with the QR code,
+     * Issuer ID, timestamp, and file SHA-256 hash.
+     */
+    fun createStampedPdfWithQr(
+        qrBitmap: Bitmap,
+        originalFileName: String,
+        issuerId: String,
+        timestamp: Long,
+        fileHash: String,
+        payloadSerialized: String,
+        outFile: File
+    ): File {
+        val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+        val pdfDocument = PdfDocument()
 
-        val minDim = min(mutable.width, mutable.height)
-        val qrSize = max(120, (minDim * 0.22f).toInt())
-        val pad = max(12, (qrSize * 0.08f).toInt())
-        val labelHeight = max(24, (qrSize * 0.16f).toInt())
+        // Standard A4-like portrait page in points (595 x 842)
+        val pageWidth = 595
+        val pageHeight = 842
+        val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, 1).create()
+        val page = pdfDocument.startPage(pageInfo)
+        val canvas: Canvas = page.canvas
 
-        val boxWidth = qrSize + pad * 2
-        val boxHeight = qrSize + pad * 2 + labelHeight
+        canvas.drawColor(Color.WHITE)
 
-        val left = (mutable.width - boxWidth - pad).toFloat().coerceAtLeast(0f)
-        val top = (mutable.height - boxHeight - pad).toFloat().coerceAtLeast(0f)
-        val right = left + boxWidth
-        val bottom = top + boxHeight
-
-        val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            style = Paint.Style.FILL
-        }
-        val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#1A73E8")
-            style = Paint.Style.STROKE
-            strokeWidth = max(2f, qrSize * 0.02f)
-        }
-
-        canvas.drawRect(left, top, right, bottom, boxPaint)
-        canvas.drawRect(left, top, right, bottom, borderPaint)
-
-        val scaledQr = Bitmap.createScaledBitmap(qr, qrSize, qrSize, false)
-        canvas.drawBitmap(scaledQr, left + pad, top + pad, null)
-
-        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor("#1A1C1E")
-            textSize = max(14f, labelHeight * 0.65f)
-            typeface = Typeface.DEFAULT_BOLD
+            textSize = 22f
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
-        val shortIssuer = if (issuerId.length > 18) issuerId.take(18) else issuerId
-        canvas.drawText(shortIssuer, left + pad, bottom - pad * 0.5f, textPaint)
+        val subtitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#5F6368")
+            textSize = 12f
+        }
+        val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#202124")
+            textSize = 13f
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        }
+        val valuePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#3C4043")
+            textSize = 12f
+        }
 
-        return mutable
+        canvas.drawText("ReceiptShield Document Verification Stamp", 48f, 64f, titlePaint)
+        canvas.drawText("Offline Cryptographic Verification Record", 48f, 84f, subtitlePaint)
+
+        // Draw QR code centered
+        val qrSize = 240
+        val qrLeft = (pageWidth - qrSize) / 2
+        val qrTop = 120
+        val scaledQr = Bitmap.createScaledBitmap(qrBitmap, qrSize, qrSize, false)
+        canvas.drawBitmap(scaledQr, qrLeft.toFloat(), qrTop.toFloat(), null)
+
+        var y = (qrTop + qrSize + 44).toFloat()
+        val lineGap = 24f
+
+        canvas.drawText("Document:", 48f, y, labelPaint)
+        canvas.drawText(originalFileName, 150f, y, valuePaint)
+        y += lineGap
+
+        canvas.drawText("Issuer ID:", 48f, y, labelPaint)
+        canvas.drawText(issuerId, 150f, y, valuePaint)
+        y += lineGap
+
+        canvas.drawText("Stamped Date:", 48f, y, labelPaint)
+        canvas.drawText(formatter.format(Date(timestamp)), 150f, y, valuePaint)
+        y += lineGap
+
+        canvas.drawText("SHA-256:", 48f, y, labelPaint)
+        canvas.drawText(fileHash.take(36) + "...", 150f, y, valuePaint)
+        y += lineGap * 1.5f
+
+        canvas.drawText("QR Payload:", 48f, y, labelPaint)
+        y += 18f
+        val chunks = payloadSerialized.chunked(68)
+        for (chunk in chunks) {
+            canvas.drawText(chunk, 48f, y, valuePaint)
+            y += 16f
+        }
+
+        pdfDocument.finishPage(page)
+        FileOutputStream(outFile).use { out ->
+            pdfDocument.writeTo(out)
+        }
+        pdfDocument.close()
+        return outFile
+    }
+
+    /**
+     * For non-PDF documents (e.g. DOCX, TXT, XLSX), writes a companion QR image and
+     * stamp text file so the QR code is generated for the document rather than images.
+     */
+    fun createDocumentQrArtifacts(
+        qrBitmap: Bitmap,
+        cleanBase: String,
+        stampSuffix: Long,
+        originalFileName: String,
+        issuerId: String,
+        timestamp: Long,
+        fileHash: String,
+        payloadSerialized: String
+    ): Pair<File, File> {
+        val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+        val dir = createStampsDirectory()
+
+        val qrFile = File(dir, "${cleanBase}_${stampSuffix}_QR.png")
+        FileOutputStream(qrFile).use { out ->
+            qrBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        }
+
+        val infoFile = File(dir, "${cleanBase}_${stampSuffix}_Stamp.txt")
+        val content = buildString {
+            appendLine("ReceiptShield Document Stamp")
+            appendLine("Document: $originalFileName")
+            appendLine("Issuer: $issuerId")
+            appendLine("Date: ${formatter.format(Date(timestamp))}")
+            appendLine("SHA-256: $fileHash")
+            appendLine("Payload: $payloadSerialized")
+        }
+        FileOutputStream(infoFile).use { out ->
+            out.write(content.toByteArray(Charsets.UTF_8))
+        }
+
+        return Pair(qrFile, infoFile)
     }
 
     private fun getFileProviderUri(file: File): Uri {
