@@ -13,17 +13,12 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
-
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
     compileOptions {
@@ -44,13 +39,13 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.activity:activity-ktx:1.8.2")
-
-    // REQUIRED: Provides lifecycleScope for safe Coroutine execution in MainActivity
+    
+    // Required for lifecycleScope (safely handles background tasks)
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
 
-    // ZXing for Offline QR Code Generation & Parsing
+    // ZXing for QR
     implementation("com.google.zxing:core:3.5.3")
 
-    // Kotlin Coroutines for non-blocking UI background processing
+    // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }
