@@ -18,7 +18,7 @@ data class ReceiptPayload(
     val issuerId: String,
     val timestamp: Long,
     val fileHash: String,
-    val perceptualHash: String, // NEW: Visual fingerprint
+    val perceptualHash: String,
     val nonce: String
 ) {
     fun serialize(): String = "$version|$issuerId|$timestamp|$fileHash|$perceptualHash|$nonce"
@@ -32,7 +32,6 @@ data class ReceiptPayload(
                     val issuerId = parts[1]
                     val timestamp = parts[2].toLong()
                     val fileHash = parts[3]
-                    // Backward compatibility for V1 (no pHash)
                     val pHash = if (version == "RS_V2") parts[4] else ""
                     val nonce = if (version == "RS_V2") parts[5] else parts[4]
 
@@ -56,49 +55,57 @@ class ReceiptSecurityManager {
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    // NEW: Generate a 64-bit Perceptual Hash (dHash) for images
     fun computePerceptualHash(bitmap: Bitmap): String {
-        // Resize to 9x8 to calculate horizontal differences
         val resized = Bitmap.createScaledBitmap(bitmap, 9, 8, true)
         val pixels = IntArray(9 * 8)
-        resized.getPixels(pixels, 0, 9, 0, 0, 9, 8)
+        
+        try {
+            resized.getPixels(pixels, 0, 9, 0, 0, 9, 8)
 
-        val hashBits = StringBuilder()
-        for (y in 0 until 8) {
-            for (x in 0 until 8) {
-                val left = pixels[y * 9 + x]
-                val right = pixels[y * 9 + x + 1]
-                // Compare grayscale values
-                val leftGray = (Color.red(left) + Color.green(left) + Color.blue(left)) / 3
-                val rightGray = (Color.red(right) + Color.green(right) + Color.blue(right)) / 3
-                hashBits.append(if (leftGray > rightGray) "1" else "0")
+            val hashBits = StringBuilder()
+            for (y in 0 until 8) {
+                for (x in 0 until 8) {
+                    val left = pixels[y * 9 + x]
+                    val right = pixels[y * 9 + x + 1]
+                    val leftGray = (Color.red(left) + Color.green(left) + Color.blue(left)) / 3
+                    val rightGray = (Color.red(right) + Color.green(right) + Color.blue(right)) / 3
+                    hashBits.append(if (leftGray > rightGray) "1" else "0")
+                }
             }
-        }
-        // Convert binary string to hex
-        return hashBits.toString().chunked(4).joinToString("") { 
-            Integer.parseInt(it, 2).toString(16) 
+            
+            return hashBits.toString().chunked(4).joinToString("") { 
+                Integer.parseInt(it, 2).toString(16) 
+            }
+        } finally {
+            // FIX: Prevent memory leaks by recycling the temporary bitmap
+            resized.recycle()
         }
     }
 
-    // NEW: Compare two perceptual hashes using Hamming Distance
     fun isVisuallySimilar(hash1: String, hash2: String, tolerance: Int = 5): Boolean {
         if (hash1.isEmpty() || hash2.isEmpty()) return false
         if (hash1.length != hash2.length) return false
         
         var distance = 0
         for (i in hash1.indices) {
-            val val1 = Integer.parseInt(hash1[i].toString(), 16)
-            val val2 = Integer.parseInt(hash2[i].toString(), 16)
-            // XOR the bits, count the differences
-            distance += Integer.bitCount(val1 xor val2)
+            try {
+                val val1 = Integer.parseInt(hash1[i].toString(), 16)
+                val val2 = Integer.parseInt(hash2[i].toString(), 16)
+                distance += Integer.bitCount(val1 xor val2)
+            } catch (e: Exception) {
+                return false
+            }
         }
         return distance <= tolerance
     }
 
     fun createStamp(liveHash: String, pHash: String, issuerId: String): ReceiptPayload {
+        // FIX: Sanitize issuerId to prevent delimiter crashes
+        val safeIssuerId = issuerId.replace("|", "_").trim().ifEmpty { "UNKNOWN" }
+        
         return ReceiptPayload(
-            version = "RS_V2", // Upgraded version
-            issuerId = issuerId,
+            version = "RS_V2",
+            issuerId = safeIssuerId,
             timestamp = System.currentTimeMillis(),
             fileHash = liveHash,
             perceptualHash = pHash,
@@ -123,11 +130,26 @@ class ReceiptSecurityManager {
 
     fun decodeQRCode(bitmap: Bitmap): String? {
         return try {
-            val pixels = IntArray(bitmap.width * bitmap.height)
-            bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-            val source = RGBLuminanceSource(bitmap.width, bitmap.height, pixels)
+            // IMPROVEMENT: Downscale massive images to save memory before scanning
+            val safeBitmap = if (bitmap.width > 2000 || bitmap.height > 2000) {
+                val ratio = 2000f / maxOf(bitmap.width, bitmap.height)
+                Bitmap.createScaledBitmap(bitmap, (bitmap.width * ratio).toInt(), (bitmap.height * ratio).toInt(), true)
+            } else {
+                bitmap
+            }
+
+            val pixels = IntArray(safeBitmap.width * safeBitmap.height)
+            safeBitmap.getPixels(pixels, 0, safeBitmap.width, 0, 0, safeBitmap.width, safeBitmap.height)
+            val source = RGBLuminanceSource(safeBitmap.width, safeBitmap.height, pixels)
             val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
-            MultiFormatReader().decode(binaryBitmap).text
-        } catch (e: Exception) { null }
+            val result = MultiFormatReader().decode(binaryBitmap).text
+            
+            // Cleanup if we created a new downscaled bitmap
+            if (safeBitmap !== bitmap) safeBitmap.recycle()
+            
+            result
+        } catch (e: Exception) { 
+            null 
+        }
     }
 }
