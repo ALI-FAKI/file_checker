@@ -4,7 +4,7 @@ executors:
   android-executor:
     docker:
       - image: cimg/android:2024.04-node
-    resource_class: medium
+    resource_class: large          # was: medium (4 GB → 8 GB). THIS is the fix.
 
 jobs:
   build-and-test:
@@ -13,27 +13,27 @@ jobs:
       - checkout
 
       - run:
-          name: Auto-Bootstrap Gradle Wrapper & Clean Caches
+          name: Auto-Bootstrap Gradle Wrapper
           command: |
             export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
             if [ ! -f "gradlew" ]; then
               gradle wrapper --gradle-version 8.4
             fi
             chmod +x gradlew
-            rm -rf /home/circleci/.gradle/caches/transforms-4/
-            rm -rf /home/circleci/.gradle/caches/journal-1/
 
       - restore_cache:
-          key: android-cache-v9-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}
+          keys:
+            - android-cache-v10-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}-{{ checksum "gradle.properties" }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}
+            - android-cache-v10-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}
 
       - run:
           name: Build Debug APK
           command: |
             export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-            ./gradlew clean assembleDebug --no-daemon
+            ./gradlew assembleDebug --stacktrace
 
       - save_cache:
-          key: android-cache-v9-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}
+          key: android-cache-v10-{{ checksum "build.gradle.kts" }}-{{ checksum "app/build.gradle.kts" }}-{{ checksum "gradle.properties" }}-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}
           paths:
             - ~/.gradle/caches
             - ~/.gradle/wrapper
