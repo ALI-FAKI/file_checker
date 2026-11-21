@@ -1,8 +1,13 @@
+
 package com.ali.receiptshield
 
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
@@ -17,12 +22,14 @@ import com.ali.receiptshield.crypto.ReceiptSecurityManager
 import com.ali.receiptshield.data.StampRepository
 import com.ali.receiptshield.data.StampedRecord
 import com.ali.receiptshield.databinding.ActivityMainBinding
+import com.ali.receiptshield.files.DocumentStampHelper
 import com.ali.receiptshield.files.StampFileHelper
 import com.ali.receiptshield.verification.VerificationHelper
 import com.google.android.material.button.MaterialButton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -35,39 +42,32 @@ class MainActivity : AppCompatActivity() {
     private lateinit var securityManager: ReceiptSecurityManager
     private lateinit var repository: StampRepository
     private lateinit var fileHelper: StampFileHelper
+    private lateinit var documentStampHelper: DocumentStampHelper
     private lateinit var verificationHelper: VerificationHelper
 
-    private var pendingVerifyFileUri: Uri? = null
     private var latestOutputFile: File? = null
     private var latestMimeType: String = "*/*"
 
-    private val dateFormatter by lazy { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
-
-    private val pickFileForStamp = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        uri?.let { processStampCreation(it) }
+    private val dateFormatter by lazy {
+        SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     }
 
-    private val pickFileToVerify = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        uri?.let {
-            pendingVerifyFileUri = it
-            binding.tvVerifyStatus.setTextColor(Color.parseColor("#3C4043"))
-            binding.tvVerifyStatus.text =
-                "Selected file: ${fileHelper.getFileName(it)}\n\nNow select the QR code image or stamp file (*/*)."
-            pickQrToVerify.launch("*/*")
+    // Select a file to stamp.
+    private val pickFileForStamp =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+            uri?.let { processStampCreation(it) }
         }
-    }
 
-    private val pickQrToVerify = registerForActivityResult(ActivityResultContracts.GetContent()) { stampUri: Uri? ->
-        val fileUri = pendingVerifyFileUri ?: return@registerForActivityResult
-        if (stampUri != null) {
-            runVerification(fileUri, stampUri)
-        } else {
-            runLocalRecordVerification(fileUri)
+    // Select a stamped file to verify.
+    // No second QR picker is needed.
+    private val pickFileToVerify =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+            uri?.let { runVerification(it) }
         }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         try {
             binding = ActivityMainBinding.inflate(layoutInflater)
             setContentView(binding.root)
@@ -75,7 +75,18 @@ class MainActivity : AppCompatActivity() {
             securityManager = ReceiptSecurityManager()
             repository = StampRepository(this)
             fileHelper = StampFileHelper(this)
-            verificationHelper = VerificationHelper(this, securityManager, dateFormatter)
+
+            documentStampHelper = DocumentStampHelper(
+                this,
+                securityManager
+            )
+
+            verificationHelper = VerificationHelper(
+                this,
+                securityManager,
+                dateFormatter,
+                documentStampHelper
+            )
 
             val currentIssuer = repository.getIssuerId()
             binding.etIssuerId.setText(currentIssuer)
@@ -84,86 +95,142 @@ class MainActivity : AppCompatActivity() {
             setupNavigation()
             setupActions()
             renderStampedFiles()
+
         } catch (t: Throwable) {
             val errorView = TextView(this).apply {
                 setPadding(48, 48, 48, 48)
                 setTextColor(Color.RED)
                 textSize = 14f
-                text = "Launch Error:\n${t::class.java.name}: ${t.message}\n\n${t.stackTrace.take(8).joinToString("\n")}"
+                text =
+                    "Launch Error:\n${t::class.java.name}: ${t.message}\n\n" +
+                    t.stackTrace.take(8).joinToString("\n")
             }
+
             setContentView(errorView)
         }
     }
 
+    // ---------------------------------------------------------
+    // NAVIGATION
+    // ---------------------------------------------------------
+
     private fun setupNavigation() {
         binding.bottomNav.setOnItemSelectedListener { item ->
+
             when (item.itemId) {
+
                 R.id.nav_stamp -> {
                     showSection("stamp")
                     true
                 }
+
                 R.id.nav_verify -> {
                     showSection("verify")
                     true
                 }
+
                 R.id.nav_history -> {
                     renderStampedFiles()
                     showSection("history")
                     true
                 }
+
                 R.id.nav_settings -> {
                     binding.tvIssuerSavedMsg.text = ""
                     showSection("settings")
                     true
                 }
+
                 else -> false
             }
         }
     }
 
     private fun showSection(section: String) {
-        binding.sectionStamp.visibility = if (section == "stamp") View.VISIBLE else View.GONE
-        binding.sectionVerify.visibility = if (section == "verify") View.VISIBLE else View.GONE
-        binding.sectionHistory.visibility = if (section == "history") View.VISIBLE else View.GONE
-        binding.sectionSettings.visibility = if (section == "settings") View.VISIBLE else View.GONE
+        binding.sectionStamp.visibility =
+            if (section == "stamp") View.VISIBLE else View.GONE
+
+        binding.sectionVerify.visibility =
+            if (section == "verify") View.VISIBLE else View.GONE
+
+        binding.sectionHistory.visibility =
+            if (section == "history") View.VISIBLE else View.GONE
+
+        binding.sectionSettings.visibility =
+            if (section == "settings") View.VISIBLE else View.GONE
+
         binding.scrollContent.scrollTo(0, 0)
     }
 
+    // ---------------------------------------------------------
+    // BUTTON ACTIONS
+    // ---------------------------------------------------------
+
     private fun setupActions() {
-        binding.btnCreateStamp.setOnClickListener { pickFileForStamp.launch("*/*") }
-        binding.btnVerifyDoc.setOnClickListener { pickFileToVerify.launch("*/*") }
+
+        binding.btnCreateStamp.setOnClickListener {
+            pickFileForStamp.launch("*/*")
+        }
+
+        binding.btnVerifyDoc.setOnClickListener {
+            pickFileToVerify.launch("*/*")
+        }
 
         binding.btnSaveStampedFile.setOnClickListener {
             val file = latestOutputFile
+
             if (file == null || !file.exists()) {
-                Toast.makeText(this, "Create a stamped file first", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    this,
+                    "Create a stamped file first",
+                    Toast.LENGTH_SHORT
+                ).show()
                 return@setOnClickListener
             }
+
             saveFile(file, latestMimeType)
         }
 
         binding.btnShareStampedFile.setOnClickListener {
             val file = latestOutputFile
+
             if (file == null || !file.exists()) {
-                Toast.makeText(this, "Create a stamped file first", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    this,
+                    "Create a stamped file first",
+                    Toast.LENGTH_SHORT
+                ).show()
                 return@setOnClickListener
             }
+
             shareFile(file, latestMimeType)
         }
 
         binding.btnSaveIssuer.setOnClickListener {
             val entered = binding.etIssuerId.text?.toString().orEmpty()
             val finalIssuer = repository.saveIssuerId(entered)
+
             binding.etIssuerId.setText(finalIssuer)
             updateIssuerBadge(finalIssuer)
+
             binding.tvIssuerSavedMsg.text = "Saved: $finalIssuer"
-            Toast.makeText(this, "Issuer ID updated", Toast.LENGTH_SHORT).show()
+
+            Toast.makeText(
+                this,
+                "Issuer ID updated",
+                Toast.LENGTH_SHORT
+            ).show()
         }
 
         binding.btnClearHistory.setOnClickListener {
             repository.clearRecords()
             renderStampedFiles()
-            Toast.makeText(this, "Stamped files list cleared", Toast.LENGTH_SHORT).show()
+
+            Toast.makeText(
+                this,
+                "Stamped files list cleared",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
@@ -171,113 +238,200 @@ class MainActivity : AppCompatActivity() {
         binding.tvActiveIssuerBadge.text = "Active Issuer: $issuer"
     }
 
+    // ---------------------------------------------------------
+    // CREATE STAMP
+    // ---------------------------------------------------------
+
     private fun processStampCreation(fileUri: Uri) {
+
         lifecycleScope.launch {
-            showLoading(true, "Hashing file...")
+
+            showLoading(true, "Preparing file...")
             binding.fileActionsRow.visibility = View.GONE
+
+            var decodedBitmap: Bitmap? = null
+            var qrBitmap: Bitmap? = null
+
             try {
                 val fileName = fileHelper.getFileName(fileUri)
                 val mime = fileHelper.guessMimeType(fileUri, fileName)
+
                 val originalBytes = withContext(Dispatchers.IO) {
-                    contentResolver.openInputStream(fileUri)?.use { it.readBytes() }
-                        ?: throw Exception("Cannot read selected file")
+                    contentResolver.openInputStream(fileUri)?.use {
+                        it.readBytes()
+                    } ?: throw Exception("Cannot read selected file")
                 }
 
-                val hash = withContext(Dispatchers.Default) {
-                    securityManager.hashInputStream(originalBytes.inputStream())
+                if (originalBytes.isEmpty()) {
+                    throw Exception("The selected file is empty")
                 }
 
-                val decodedBitmap = withContext(Dispatchers.Default) {
-                    BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size)
+                val extension = fileName
+                    .substringAfterLast('.', "")
+                    .lowercase()
+
+                decodedBitmap = withContext(Dispatchers.Default) {
+                    BitmapFactory.decodeByteArray(
+                        originalBytes,
+                        0,
+                        originalBytes.size
+                    )
                 }
 
                 val isImage = decodedBitmap != null
-                val isDocument = !isImage
+
+                // Only supported formats are accepted.
+                if (!isImage && extension !in listOf("pdf", "docx")) {
+                    throw Exception(
+                        when (extension) {
+                            "doc" ->
+                                "Legacy DOC files are not supported. Save the file as DOCX first."
+
+                            else ->
+                                "Unsupported file format. Supported formats are PDF, DOCX and images."
+                        }
+                    )
+                }
+
+                val hash = withContext(Dispatchers.Default) {
+                    securityManager.hashInputStream(
+                        originalBytes.inputStream()
+                    )
+                }
+
                 val pHash = if (isImage && decodedBitmap != null) {
                     withContext(Dispatchers.Default) {
-                        securityManager.computePerceptualHash(decodedBitmap)
+                        securityManager.computePerceptualHash(
+                            decodedBitmap!!
+                        )
                     }
-                } else ""
+                } else {
+                    ""
+                }
 
                 val issuer = repository.getIssuerId()
-                val timestamp = System.currentTimeMillis()
-                val payload = securityManager.createStamp(hash, pHash, issuer)
+
+                val payload = securityManager.createStamp(
+                    hash,
+                    pHash,
+                    issuer
+                )
+
                 val serialized = payload.serialize()
+                val timestamp = payload.timestamp
 
                 val dir = fileHelper.createStampsDirectory()
-                val cleanBase = fileName.substringBeforeLast('.').replace(Regex("[^A-Za-z0-9_-]"), "_")
+
+                val cleanBase = fileName
+                    .substringBeforeLast('.')
+                    .replace(Regex("[^A-Za-z0-9_-]"), "_")
 
                 val outputFile: File
                 val outputMime: String
                 val modeNote: String
+                val isDocumentStamp: Boolean
 
-                if (isDocument) {
-                    val qrBitmap = withContext(Dispatchers.Default) {
-                        securityManager.generateQRCodeBitmap(serialized)
-                    } ?: throw Exception("Failed to generate QR code")
+                showLoading(true, "Generating QR code...")
 
-                    if (fileHelper.isPdfFile(fileName, mime)) {
-                        outputFile = File(dir, "${cleanBase}_${timestamp}_Stamped.pdf")
-                        withContext(Dispatchers.IO) {
-                            fileHelper.createStampedPdfWithQr(
-                                qrBitmap = qrBitmap,
-                                originalFileName = fileName,
-                                issuerId = issuer,
-                                timestamp = payload.timestamp,
-                                fileHash = hash,
-                                payloadSerialized = serialized,
-                                outFile = outputFile
-                            )
-                        }
-                        outputMime = "application/pdf"
-                        modeNote = "QR embedded in stamped PDF"
-                    } else {
-                        val (_, infoFile) = withContext(Dispatchers.IO) {
-                            fileHelper.createDocumentQrArtifacts(
-                                qrBitmap = qrBitmap,
-                                cleanBase = cleanBase,
-                                stampSuffix = timestamp,
-                                originalFileName = fileName,
-                                issuerId = issuer,
-                                timestamp = payload.timestamp,
-                                fileHash = hash,
-                                payloadSerialized = serialized
-                            )
-                        }
-                        // Keep original document untouched, and store the QR/stamp file alongside it
-                        val ext = fileName.substringAfterLast('.', "").takeIf { it.isNotEmpty() }
-                        outputFile = if (ext != null) {
-                            File(dir, "${cleanBase}_${timestamp}.$ext")
-                        } else {
-                            File(dir, "${cleanBase}_${timestamp}")
-                        }
-                        withContext(Dispatchers.IO) {
-                            FileOutputStream(outputFile).use { out -> out.write(originalBytes) }
-                        }
-                        outputMime = mime
-                        modeNote = "QR generated for document (${infoFile.name})"
-                    }
-                } else {
-                    // Image: keep original image without QR overlay
-                    val ext = fileName.substringAfterLast('.', "").takeIf { it.isNotEmpty() }
-                    outputFile = if (ext != null) {
-                        File(dir, "${cleanBase}_${timestamp}.$ext")
-                    } else {
-                        File(dir, "${cleanBase}_${timestamp}")
-                    }
+                qrBitmap = withContext(Dispatchers.Default) {
+                    securityManager.generateQRCodeBitmap(serialized)
+                } ?: throw Exception("Failed to generate QR code")
+
+                // -------------------------------------------------
+                // PDF
+                // -------------------------------------------------
+
+                if (extension == "pdf") {
+
+                    outputFile = File(
+                        dir,
+                        "${cleanBase}_${timestamp}_Stamped.pdf"
+                    )
+
                     withContext(Dispatchers.IO) {
-                        FileOutputStream(outputFile).use { out -> out.write(originalBytes) }
+                        documentStampHelper.stampPdf(
+                            originalBytes,
+                            qrBitmap!!,
+                            outputFile
+                        )
                     }
-                    outputMime = mime
-                    modeNote = "Original image kept (QR reserved for documents)"
+
+                    outputMime = "application/pdf"
+                    modeNote = "ReceiptShield QR embedded in PDF"
+                    isDocumentStamp = true
+
+                // -------------------------------------------------
+                // DOCX
+                // -------------------------------------------------
+
+                } else if (extension == "docx") {
+
+                    outputFile = File(
+                        dir,
+                        "${cleanBase}_${timestamp}_Stamped.docx"
+                    )
+
+                    withContext(Dispatchers.IO) {
+                        documentStampHelper.stampDocx(
+                            originalBytes,
+                            qrBitmap!!,
+                            outputFile
+                        )
+                    }
+
+                    outputMime =
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+                    modeNote = "ReceiptShield QR embedded in DOCX"
+                    isDocumentStamp = true
+
+                // -------------------------------------------------
+                // IMAGE
+                // -------------------------------------------------
+
+                } else {
+
+                    val sourceBitmap = decodedBitmap
+                        ?: throw Exception("Unable to decode image")
+
+                    outputFile = File(
+                        dir,
+                        "${cleanBase}_${timestamp}_Stamped.png"
+                    )
+
+                    val stampedBitmap = withContext(Dispatchers.Default) {
+                        overlayQrOnImage(
+                            sourceBitmap,
+                            qrBitmap!!
+                        )
+                    }
+
+                    try {
+                        withContext(Dispatchers.IO) {
+                            FileOutputStream(outputFile).use { output ->
+                                stampedBitmap.compress(
+                                    Bitmap.CompressFormat.PNG,
+                                    100,
+                                    output
+                                )
+                            }
+                        }
+                    } finally {
+                        stampedBitmap.recycle()
+                    }
+
+                    outputMime = "image/png"
+                    modeNote = "ReceiptShield QR embedded in image"
+                    isDocumentStamp = false
                 }
 
+                // Save stamp history.
                 repository.saveRecord(
                     StampedRecord(
                         displayName = fileName,
                         outputFilePath = outputFile.absolutePath,
                         mimeType = outputMime,
-                        isDocumentStamp = isDocument,
+                        isDocumentStamp = isDocumentStamp,
                         hash = hash,
                         issuerId = payload.issuerId,
                         timestamp = payload.timestamp,
@@ -285,134 +439,192 @@ class MainActivity : AppCompatActivity() {
                     )
                 )
 
-                withContext(Dispatchers.Main) {
-                    latestOutputFile = outputFile
-                    latestMimeType = outputMime
-                    binding.fileActionsRow.visibility = View.VISIBLE
-                    binding.tvStatus.setTextColor(Color.parseColor("#0F9D58"))
-                    binding.tvStatus.text =
-                        "Stamp Processed!\n\n" +
-                        "File: $fileName\n" +
-                        "Output: ${outputFile.name}\n" +
-                        "Mode: $modeNote\n" +
-                        "Issuer: ${payload.issuerId}\n" +
-                        "Date: ${dateFormatter.format(Date(payload.timestamp))}\n" +
-                        "SHA-256: ${hash.take(24)}..."
-                    showLoading(false, null)
-                }
+                latestOutputFile = outputFile
+                latestMimeType = outputMime
+
+                binding.fileActionsRow.visibility = View.VISIBLE
+                binding.tvStatus.setTextColor(
+                    Color.parseColor("#0F9D58")
+                )
+
+                binding.tvStatus.text =
+                    "Stamp Processed!\n\n" +
+                    "File: $fileName\n" +
+                    "Output: ${outputFile.name}\n" +
+                    "Mode: $modeNote\n" +
+                    "Issuer: ${payload.issuerId}\n" +
+                    "Date: ${dateFormatter.format(Date(payload.timestamp))}\n" +
+                    "SHA-256: ${hash.take(24)}..."
+
+                renderStampedFiles()
+                showLoading(false, null)
+
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    binding.tvStatus.setTextColor(Color.RED)
-                    showLoading(false, "Error: ${e.message}")
-                }
+
+                binding.tvStatus.setTextColor(Color.RED)
+
+                showLoading(
+                    false,
+                    "Error: ${e.message ?: "Unable to stamp file"}"
+                )
+
+            } finally {
+                decodedBitmap?.recycle()
+                qrBitmap?.recycle()
             }
         }
     }
 
-    private fun runVerification(fileUri: Uri, stampSourceUri: Uri) {
+    // ---------------------------------------------------------
+    // ADD QR CODE TO IMAGE
+    // ---------------------------------------------------------
+
+    private fun overlayQrOnImage(
+        original: Bitmap,
+        qr: Bitmap
+    ): Bitmap {
+
+        val result = original.copy(Bitmap.Config.ARGB_8888, true)
+            ?: throw Exception("Unable to prepare image")
+
+        val canvas = Canvas(result)
+
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            isFilterBitmap = true
+            isDither = true
+        }
+
+        val qrSize = (result.width.coerceAtMost(result.height) * 0.25f)
+            .coerceAtLeast(100f)
+            .coerceAtMost(400f)
+
+        val margin = (result.width.coerceAtMost(result.height) * 0.03f)
+            .coerceAtLeast(12f)
+
+        val left = result.width - qrSize - margin
+        val top = result.height - qrSize - margin
+
+        // White background improves QR scanning.
+        val backgroundRect = RectF(
+            left - 10f,
+            top - 10f,
+            left + qrSize + 10f,
+            top + qrSize + 10f
+        )
+
+        paint.color = Color.WHITE
+
+        canvas.drawRoundRect(
+            backgroundRect,
+            8f,
+            8f,
+            paint
+        )
+
+        val destination = RectF(
+            left,
+            top,
+            left + qrSize,
+            top + qrSize
+        )
+
+        canvas.drawBitmap(
+            qr,
+            null,
+            destination,
+            paint
+        )
+
+        return result
+    }
+
+    // ---------------------------------------------------------
+    // VERIFY SELECTED FILE
+    // ---------------------------------------------------------
+
+    private fun runVerification(fileUri: Uri) {
+
         lifecycleScope.launch {
+
             binding.progressBar.visibility = View.VISIBLE
-            binding.tvVerifyStatus.setTextColor(Color.parseColor("#3C4043"))
-            binding.tvVerifyStatus.text = "Verifying document..."
+
+            binding.tvVerifyStatus.setTextColor(
+                Color.parseColor("#3C4043")
+            )
+
+            binding.tvVerifyStatus.text =
+                "Reading QR code and checking file..."
+
             try {
                 val fileName = fileHelper.getFileName(fileUri)
-                val outcome = verificationHelper.verifyFileWithStampSource(fileUri, stampSourceUri, fileName)
-                withContext(Dispatchers.Main) {
-                    binding.progressBar.visibility = View.GONE
-                    binding.tvVerifyStatus.setTextColor(verificationHelper.parseColor(outcome.colorHex))
-                    binding.tvVerifyStatus.text = outcome.message
-                }
+
+                val outcome = verificationHelper.verifyStampedFile(
+                    fileUri,
+                    fileName
+                )
+
+                binding.progressBar.visibility = View.GONE
+
+                binding.tvVerifyStatus.setTextColor(outcome.color)
+                binding.tvVerifyStatus.text =
+                    "${outcome.title}\n\n${outcome.message}"
+
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    binding.progressBar.visibility = View.GONE
-                    binding.tvVerifyStatus.setTextColor(Color.RED)
-                    binding.tvVerifyStatus.text = "Verification Failed:\n${e.message}"
-                }
+
+                binding.progressBar.visibility = View.GONE
+
+                binding.tvVerifyStatus.setTextColor(Color.RED)
+
+                binding.tvVerifyStatus.text =
+                    "Verification Failed:\n${e.message}"
             }
         }
     }
 
-    private fun runLocalRecordVerification(fileUri: Uri) {
-        lifecycleScope.launch {
-            binding.progressBar.visibility = View.VISIBLE
-            binding.tvVerifyStatus.setTextColor(Color.parseColor("#3C4043"))
-            binding.tvVerifyStatus.text = "Checking local stamp records..."
-            try {
-                val fileName = fileHelper.getFileName(fileUri)
-                val liveHash = withContext(Dispatchers.IO) {
-                    contentResolver.openInputStream(fileUri)?.use {
-                        securityManager.hashInputStream(it)
-                    } ?: throw Exception("Cannot open file")
-                }
-                val matched = repository.findRecordByHash(liveHash)
-                withContext(Dispatchers.Main) {
-                    binding.progressBar.visibility = View.GONE
-                    if (matched != null && matched.payloadSerialized.isNotBlank()) {
-                        runVerificationWithKnownPayload(fileUri, fileName, matched.payloadSerialized)
-                    } else {
-                        binding.tvVerifyStatus.setTextColor(Color.parseColor("#D93025"))
-                        binding.tvVerifyStatus.text =
-                            "No QR/stamp file selected and no matching local stamp found for:\n$fileName"
-                    }
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    binding.progressBar.visibility = View.GONE
-                    binding.tvVerifyStatus.setTextColor(Color.RED)
-                    binding.tvVerifyStatus.text = "Verification Failed:\n${e.message}"
-                }
-            }
-        }
-    }
-
-    private fun runVerificationWithKnownPayload(fileUri: Uri, fileName: String, payloadSerialized: String) {
-        lifecycleScope.launch {
-            binding.progressBar.visibility = View.VISIBLE
-            try {
-                val outcome = verificationHelper.verifyFileAgainstPayloadString(fileUri, fileName, payloadSerialized)
-                withContext(Dispatchers.Main) {
-                    binding.progressBar.visibility = View.GONE
-                    binding.tvVerifyStatus.setTextColor(verificationHelper.parseColor(outcome.colorHex))
-                    binding.tvVerifyStatus.text = outcome.message
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    binding.progressBar.visibility = View.GONE
-                    binding.tvVerifyStatus.setTextColor(Color.RED)
-                    binding.tvVerifyStatus.text = "Verification Failed:\n${e.message}"
-                }
-            }
-        }
-    }
+    // ---------------------------------------------------------
+    // HISTORY
+    // ---------------------------------------------------------
 
     private fun renderStampedFiles() {
+
         binding.historyContainer.removeAllViews()
+
         val records = repository.loadRecords()
 
         if (records.isEmpty()) {
+
             val emptyView = TextView(this).apply {
-                text = "No stamped files yet. Pick a document or file on the Stamp tab to see it here."
+                text =
+                    "No stamped files yet. Pick a document or file on the Stamp tab to see it here."
+
                 setTextColor(Color.parseColor("#5F6368"))
                 textSize = 14f
                 setPadding(24, 24, 24, 24)
                 setBackgroundColor(Color.WHITE)
             }
+
             binding.historyContainer.addView(emptyView)
             return
         }
 
         for (record in records) {
+
             val outFile = File(record.outputFilePath)
-            val fileExists = record.outputFilePath.isNotEmpty() && outFile.exists()
+
+            val fileExists =
+                record.outputFilePath.isNotEmpty() && outFile.exists()
 
             val card = LinearLayout(this).apply {
+
                 orientation = LinearLayout.VERTICAL
                 setBackgroundColor(Color.WHITE)
                 setPadding(28, 24, 28, 24)
+
                 val params = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 )
+
                 params.bottomMargin = 20
                 layoutParams = params
             }
@@ -424,11 +636,21 @@ class MainActivity : AppCompatActivity() {
                 setTypeface(typeface, Typeface.BOLD)
             }
 
-            val typeLabel = if (record.isDocumentStamp) "Document Stamp (QR generated)" else "Original Image"
+            val typeLabel =
+                if (record.isDocumentStamp) {
+                    "Document Stamp (QR embedded)"
+                } else {
+                    "Image Stamp (QR embedded)"
+                }
+
             val metaTv = TextView(this).apply {
-                text = "$typeLabel • ${if (fileExists) outFile.name else "Unavailable"}\n" +
-                    "Issuer: ${record.issuerId} • ${dateFormatter.format(Date(record.timestamp))}\n" +
+
+                text =
+                    "$typeLabel • ${if (fileExists) outFile.name else "Unavailable"}\n" +
+                    "Issuer: ${record.issuerId} • " +
+                    "${dateFormatter.format(Date(record.timestamp))}\n" +
                     "SHA-256: ${record.hash.take(20)}..."
+
                 setTextColor(Color.parseColor("#5F6368"))
                 textSize = 12f
                 setPadding(0, 8, 0, 12)
@@ -439,34 +661,61 @@ class MainActivity : AppCompatActivity() {
             }
 
             val openBtn = MaterialButton(this).apply {
+
                 text = "Open File"
                 isAllCaps = false
                 textSize = 12f
                 isEnabled = fileExists
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+
+                layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                ).apply {
                     marginEnd = 8
                 }
-                setOnClickListener { openFile(outFile, record.mimeType) }
+
+                setOnClickListener {
+                    openFile(outFile, record.mimeType)
+                }
             }
 
             val saveBtn = MaterialButton(this).apply {
+
                 text = "Save"
                 isAllCaps = false
                 textSize = 12f
                 isEnabled = fileExists
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+
+                layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                ).apply {
                     marginEnd = 8
                 }
-                setOnClickListener { saveFile(outFile, record.mimeType) }
+
+                setOnClickListener {
+                    saveFile(outFile, record.mimeType)
+                }
             }
 
             val shareBtn = MaterialButton(this).apply {
+
                 text = "Share"
                 isAllCaps = false
                 textSize = 12f
                 isEnabled = fileExists
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                setOnClickListener { shareFile(outFile, record.mimeType) }
+
+                layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                )
+
+                setOnClickListener {
+                    shareFile(outFile, record.mimeType)
+                }
             }
 
             actionsRow.addView(openBtn)
@@ -481,35 +730,98 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ---------------------------------------------------------
+    // OPEN FILE
+    // ---------------------------------------------------------
+
     private fun openFile(file: File, mimeType: String) {
+
         try {
-            startActivity(Intent.createChooser(fileHelper.buildOpenIntent(file, mimeType), "Open File"))
+            startActivity(
+                Intent.createChooser(
+                    fileHelper.buildOpenIntent(file, mimeType),
+                    "Open File"
+                )
+            )
+
         } catch (_: Exception) {
-            Toast.makeText(this, "No app found to open this file type", Toast.LENGTH_SHORT).show()
+
+            Toast.makeText(
+                this,
+                "No app found to open this file type",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
+
+    // ---------------------------------------------------------
+    // SHARE FILE
+    // ---------------------------------------------------------
 
     private fun shareFile(file: File, mimeType: String) {
+
         try {
-            startActivity(Intent.createChooser(fileHelper.buildShareIntent(file, mimeType), "Share File"))
+            startActivity(
+                Intent.createChooser(
+                    fileHelper.buildShareIntent(file, mimeType),
+                    "Share File"
+                )
+            )
+
         } catch (e: Exception) {
-            Toast.makeText(this, "Share failed: ${e.message}", Toast.LENGTH_SHORT).show()
+
+            Toast.makeText(
+                this,
+                "Share failed: ${e.message}",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
+    // ---------------------------------------------------------
+    // SAVE FILE
+    // ---------------------------------------------------------
+
     private fun saveFile(file: File, mimeType: String) {
+
         lifecycleScope.launch {
+
             try {
-                val savedLocation = fileHelper.saveToDevice(file, mimeType)
-                Toast.makeText(this@MainActivity, "Saved to $savedLocation", Toast.LENGTH_LONG).show()
+                val savedLocation = withContext(Dispatchers.IO) {
+                    fileHelper.saveToDevice(file, mimeType)
+                }
+
+                Toast.makeText(
+                    this@MainActivity,
+                    "Saved to $savedLocation",
+                    Toast.LENGTH_LONG
+                ).show()
+
             } catch (e: Exception) {
-                Toast.makeText(this@MainActivity, "Save failed: ${e.message}", Toast.LENGTH_SHORT).show()
+
+                Toast.makeText(
+                    this@MainActivity,
+                    "Save failed: ${e.message}",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         }
     }
 
-    private fun showLoading(isLoading: Boolean, message: String?) {
-        binding.progressBar.visibility = if (isLoading) View.VISIBLE else View.GONE
-        if (message != null) binding.tvStatus.text = message
+    // ---------------------------------------------------------
+    // LOADING
+    // ---------------------------------------------------------
+
+    private fun showLoading(
+        isLoading: Boolean,
+        message: String?
+    ) {
+
+        binding.progressBar.visibility =
+            if (isLoading) View.VISIBLE else View.GONE
+
+        if (message != null) {
+            binding.tvStatus.text = message
+        }
     }
 }
