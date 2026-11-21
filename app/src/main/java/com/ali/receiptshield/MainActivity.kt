@@ -351,7 +351,7 @@ class MainActivity : AppCompatActivity() {
 
             val openBtn = MaterialButton(this).apply {
                 text = "Open File"
-                textAllCaps = false
+                isAllCaps = false
                 textSize = 12f
                 isEnabled = fileExists
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
@@ -362,7 +362,7 @@ class MainActivity : AppCompatActivity() {
 
             val saveBtn = MaterialButton(this).apply {
                 text = "Save"
-                textAllCaps = false
+                isAllCaps = false
                 textSize = 12f
                 isEnabled = fileExists
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
@@ -373,7 +373,7 @@ class MainActivity : AppCompatActivity() {
 
             val shareBtn = MaterialButton(this).apply {
                 text = "Share"
-                textAllCaps = false
+                isAllCaps = false
                 textSize = 12f
                 isEnabled = fileExists
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
