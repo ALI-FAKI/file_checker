@@ -1,121 +1,237 @@
+
 package com.ali.receiptshield.verification
 
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.net.Uri
-import com.ali.receiptshield.crypto.ReceiptPayload
 import com.ali.receiptshield.crypto.ReceiptSecurityManager
+import com.ali.receiptshield.files.DocumentStampHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
 
 data class VerificationOutcome(
+    val title: String,
     val message: String,
-    val colorHex: String
+    val color: Int,
+    val isVerified: Boolean
 )
 
 class VerificationHelper(
     private val context: Context,
     private val securityManager: ReceiptSecurityManager,
-    private val dateFormatter: SimpleDateFormat
+    private val dateFormatter: SimpleDateFormat,
+    private val documentStampHelper: DocumentStampHelper
 ) {
 
-    suspend fun verifyFileWithStampSource(
+    suspend fun verifyStampedFile(
         fileUri: Uri,
-        stampSourceUri: Uri,
         fileName: String
     ): VerificationOutcome = withContext(Dispatchers.IO) {
-        val rawBytes = context.contentResolver.openInputStream(stampSourceUri)?.use { it.readBytes() }
-            ?: throw Exception("Cannot read selected stamp/QR file")
 
-        val decodedPayloadString = extractPayloadFromBytes(rawBytes)
-            ?: throw Exception("Could not find a valid ReceiptShield QR code or stamp payload in the selected file.")
+        try {
+            val fileBytes = readFile(fileUri)
 
-        verifyFileAgainstPayloadString(fileUri, fileName, decodedPayloadString)
+            if (fileBytes.isEmpty()) {
+                return@withContext failure(
+                    "The selected file is empty."
+                )
+            }
+
+            val extension = fileName
+                .substringAfterLast('.', "")
+                .lowercase()
+
+            val qrContent: String? = when (extension) {
+
+                "pdf" -> {
+                    documentStampHelper.extractQrFromPdf(fileBytes)
+                }
+
+                "docx" -> {
+                    documentStampHelper.extractQrFromDocx(fileBytes)
+                }
+
+                "doc" -> {
+                    return@withContext failure(
+                        "Legacy DOC files are not supported. " +
+                        "Please convert the document to DOCX first."
+                    )
+                }
+
+                else -> {
+                    val bitmap = BitmapFactory.decodeByteArray(
+                        fileBytes,
+                        0,
+                        fileBytes.size
+                    )
+
+                    if (bitmap == null) {
+                        return@withContext failure(
+                            "This file format is not supported for QR verification."
+                        )
+                    }
+
+                    try {
+                        securityManager.decodeQRCode(bitmap)
+                    } finally {
+                        bitmap.recycle()
+                    }
+                }
+            }
+
+            if (qrContent.isNullOrBlank()) {
+                return@withContext failure(
+                    "No ReceiptShield QR code was found in this file."
+                )
+            }
+
+            val payload = securityManager.deserialize(qrContent)
+
+            if (payload == null) {
+                return@withContext failure(
+                    "A QR code was found, but its ReceiptShield data is invalid."
+                )
+            }
+
+            val issueDate = dateFormatter.format(
+                Date(payload.timestamp)
+            )
+
+            /*
+             * Important:
+             * PDF and DOCX files are modified when the QR code is inserted.
+             * Their final file hash is therefore different from the original
+             * hash stored in the QR payload.
+             *
+             * This check confirms that a readable ReceiptShield QR payload
+             * exists. It does NOT prove that the document contents are
+             * unchanged or that the QR code is genuine.
+             */
+
+            if (extension == "pdf" || extension == "docx") {
+                return@withContext VerificationOutcome(
+                    title = "QR CODE FOUND",
+                    message = """
+                        A ReceiptShield QR code was detected.
+
+                        File: $fileName
+
+                        Issuer ID: ${payload.issuerId}
+
+                        Issued: $issueDate
+
+                        Document QR detection: Successful
+
+                        Integrity status: Not independently verified.
+
+                        The QR code was found, but this result does not prove that the document has not been modified.
+                    """.trimIndent(),
+                    color = Color.rgb(230, 126, 34),
+                    isVerified = false
+                )
+            }
+
+            // Image verification: compare the actual file hash.
+            val actualHash = securityManager.hashInputStream(
+                fileBytes.inputStream()
+            )
+
+            if (actualHash.equals(payload.fileHash, ignoreCase = true)) {
+                return@withContext VerificationOutcome(
+                    title = "DOCUMENT VERIFIED",
+                    message = """
+                        The ReceiptShield QR code was detected.
+
+                        File: $fileName
+
+                        Issuer ID: ${payload.issuerId}
+
+                        Issued: $issueDate
+
+                        Integrity check: Exact file hash match.
+
+                        The file matches the hash stored in the QR payload.
+                    """.trimIndent(),
+                    color = Color.rgb(46, 125, 50),
+                    isVerified = true
+                )
+            }
+
+            // If exact hash differs, try perceptual image comparison.
+            val bitmap = BitmapFactory.decodeByteArray(
+                fileBytes,
+                0,
+                fileBytes.size
+            )
+
+            if (bitmap != null) {
+                try {
+                    val actualPerceptualHash =
+                        securityManager.computePerceptualHash(bitmap)
+
+                    if (
+                        payload.perceptualHash.isNotBlank() &&
+                        securityManager.isVisuallySimilar(
+                            payload.perceptualHash,
+                            actualPerceptualHash
+                        )
+                    ) {
+                        return@withContext VerificationOutcome(
+                            title = "VISUALLY SIMILAR",
+                            message = """
+                                The QR code was detected.
+
+                                File: $fileName
+
+                                Issuer ID: ${payload.issuerId}
+
+                                Issued: $issueDate
+
+                                The image looks visually similar to the original, but its exact file hash has changed.
+
+                                Further review is recommended.
+                            """.trimIndent(),
+                            color = Color.rgb(230, 126, 34),
+                            isVerified = false
+                        )
+                    }
+                } finally {
+                    bitmap.recycle()
+                }
+            }
+
+            failure(
+                "The file hash does not match the original record. The file may have been modified."
+            )
+
+        } catch (e: Exception) {
+            failure(
+                "Verification failed: ${e.message ?: "Unknown error"}"
+            )
+        }
     }
 
-    suspend fun verifyFileAgainstPayloadString(
-        fileUri: Uri,
-        fileName: String,
-        payloadString: String
-    ): VerificationOutcome = withContext(Dispatchers.IO) {
-        val payload = ReceiptPayload.deserialize(payloadString.trim())
-            ?: throw Exception("Invalid ReceiptShield payload format.")
-
-        val liveHash = context.contentResolver.openInputStream(fileUri)?.use {
-            securityManager.hashInputStream(it)
-        } ?: throw Exception("Cannot open file for hashing")
-
-        val livePHash = try {
-            val bmp = context.contentResolver.openInputStream(fileUri)?.use { stream ->
-                BitmapFactory.decodeStream(stream)
-            }
-            if (bmp != null) securityManager.computePerceptualHash(bmp) else ""
-        } catch (_: Exception) {
-            ""
-        }
-
-        val formattedDate = dateFormatter.format(Date(payload.timestamp))
-
-        when {
-            liveHash.equals(payload.fileHash, ignoreCase = true) -> VerificationOutcome(
-                message = "100% AUTHENTIC\n\n" +
-                    "File: $fileName\n" +
-                    "Status: Unmodified binary match\n" +
-                    "Issuer: ${payload.issuerId}\n" +
-                    "Stamped: $formattedDate",
-                colorHex = "#0F9D58"
+    private fun readFile(uri: Uri): ByteArray {
+        val input: InputStream = context.contentResolver.openInputStream(uri)
+            ?: throw IllegalArgumentException(
+                "Unable to open the selected file."
             )
-            payload.perceptualHash.isNotEmpty() &&
-                securityManager.isVisuallySimilar(livePHash, payload.perceptualHash) -> VerificationOutcome(
-                message = "AUTHENTIC (Re-encoded / Compressed)\n\n" +
-                    "File: $fileName\n" +
-                    "Status: Visual hash match\n" +
-                    "Issuer: ${payload.issuerId}\n" +
-                    "Stamped: $formattedDate",
-                colorHex = "#F59E0B"
-            )
-            else -> VerificationOutcome(
-                message = "TAMPERED / FORGED\n\n" +
-                    "File: $fileName\n" +
-                    "Expected Hash: ${payload.fileHash.take(18)}...\n" +
-                    "Actual Hash: ${liveHash.take(18)}...",
-                colorHex = "#D93025"
-            )
+
+        return input.use {
+            it.readBytes()
         }
     }
 
-    private fun extractPayloadFromBytes(bytes: ByteArray): String? {
-        // 1. Try decoding as QR image first
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-        if (bitmap != null) {
-            val qrText = securityManager.decodeQRCode(bitmap)
-            if (!qrText.isNullOrBlank()) return qrText
-        }
-
-        // 2. Otherwise check if it's a text/stamp file containing RS_V1 / RS_V2 payload
-        val asText = try {
-            bytes.toString(Charsets.UTF_8)
-        } catch (_: Exception) {
-            ""
-        }
-
-        if (asText.isNotBlank()) {
-            val payloadLine = asText.lines().firstOrNull { it.trim().startsWith("Payload:") }
-            if (payloadLine != null) {
-                return payloadLine.substringAfter("Payload:").trim()
-            }
-            val directToken = asText.split(Regex("\\s+")).firstOrNull {
-                it.startsWith("RS_V2|") || it.startsWith("RS_V1|")
-            }
-            if (directToken != null) return directToken.trim()
-        }
-
-        return null
+    private fun failure(message: String): VerificationOutcome {
+        return VerificationOutcome(
+            title = "VERIFICATION FAILED",
+            message = message,
+            color = Color.rgb(198, 40, 40),
+            isVerified = false
+        )
     }
-
-    fun parseColor(colorHex: String): Int = Color.parseColor(colorHex)
 }
