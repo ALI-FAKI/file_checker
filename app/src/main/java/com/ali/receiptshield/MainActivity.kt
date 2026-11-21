@@ -126,18 +126,16 @@ class MainActivity : AppCompatActivity() {
                 // 3. Verification Logic
                 withContext(Dispatchers.Main) {
                     binding.ivQrPreview.visibility = View.GONE
-                    
+
                     if (liveHash.equals(payload.fileHash, ignoreCase = true)) {
                         // Perfect match
                         binding.tvStatus.setTextColor(Color.parseColor("#0F9D58")) // Green
                         binding.tvStatus.text = "✅ 100% AUTHENTIC\n\nFile: $fileName\n\nThe file is unmodified.\n\nIssuer: ${payload.issuerId}\nDate: ${Date(payload.timestamp)}"
-                    } 
-                    else if (payload.perceptualHash.isNotEmpty() && securityManager.isVisuallySimilar(livePHash, payload.perceptualHash)) {
+                    } else if (payload.perceptualHash.isNotEmpty() && securityManager.isVisuallySimilar(livePHash, payload.perceptualHash)) {
                         // Visual match, but binary changed (WhatsApp compression)
                         binding.tvStatus.setTextColor(Color.parseColor("#F59E0B")) // Amber/Orange
                         binding.tvStatus.text = "⚠️ AUTHENTIC (Re-compressed)\n\nFile: $fileName\n\nThe visual content matches the original, but the file was compressed/re-encoded (e.g., sent via WhatsApp).\n\nIssuer: ${payload.issuerId}\nDate: ${Date(payload.timestamp)}"
-                    } 
-                    else {
+                    } else {
                         // Tampered
                         binding.tvStatus.setTextColor(Color.RED)
                         binding.tvStatus.text = "❌ TAMPERED / FORGED\n\nFile: $fileName\n\nThe visual content or binary has been altered. This document is not authentic.\n\nExpected: ${payload.fileHash.take(16)}...\nActual: ${liveHash.take(16)}..."
@@ -159,21 +157,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun getFileName(uri: Uri): String {
-        var result: String? = null
         if (uri.scheme == "content") {
-            val cursor = contentResolver.query(uri, null, null, null, null)
-            try {
-                if (cursor != null && cursor.moveToFirst()) {
+            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
                     val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (index != -1) result = cursor.getString(index)
+                    if (index != -1) {
+                        cursor.getString(index)?.let { return it }
+                    }
                 }
-            } finally { cursor?.close() }
+            }
         }
-        if (result == null) {
-            result = uri.path
-            val cut = result?.lastIndexOf('/')
-            if (cut != null && cut != -1) result = result.substring(cut + 1)
-        }
-        return result ?: "Unknown File"
+
+        val path = uri.path ?: return "Unknown File"
+        val cut = path.lastIndexOf('/')
+        return if (cut != -1) path.substring(cut + 1) else path
     }
 }
