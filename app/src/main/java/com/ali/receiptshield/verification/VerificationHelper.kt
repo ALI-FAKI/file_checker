@@ -23,25 +23,31 @@ class VerificationHelper(
     private val dateFormatter: SimpleDateFormat
 ) {
 
-    suspend fun verifyFileWithQr(
+    suspend fun verifyFileWithStampSource(
         fileUri: Uri,
-        qrUri: Uri,
+        stampSourceUri: Uri,
         fileName: String
     ): VerificationOutcome = withContext(Dispatchers.IO) {
-        val qrBitmap = context.contentResolver.openInputStream(qrUri)?.use {
-            BitmapFactory.decodeStream(it)
-        } ?: throw Exception("Cannot read QR Image")
+        val rawBytes = context.contentResolver.openInputStream(stampSourceUri)?.use { it.readBytes() }
+            ?: throw Exception("Cannot read selected stamp/QR file")
 
-        val payloadString = withContext(Dispatchers.Default) {
-            securityManager.decodeQRCode(qrBitmap)
-        } ?: throw Exception("No valid QR code found in the selected image.")
+        val decodedPayloadString = extractPayloadFromBytes(rawBytes)
+            ?: throw Exception("Could not find a valid ReceiptShield QR code or stamp payload in the selected file.")
 
-        val payload = ReceiptPayload.deserialize(payloadString)
+        verifyFileAgainstPayloadString(fileUri, fileName, decodedPayloadString)
+    }
+
+    suspend fun verifyFileAgainstPayloadString(
+        fileUri: Uri,
+        fileName: String,
+        payloadString: String
+    ): VerificationOutcome = withContext(Dispatchers.IO) {
+        val payload = ReceiptPayload.deserialize(payloadString.trim())
             ?: throw Exception("Invalid ReceiptShield payload format.")
 
         val liveHash = context.contentResolver.openInputStream(fileUri)?.use {
             securityManager.hashInputStream(it)
-        } ?: throw Exception("Cannot open file")
+        } ?: throw Exception("Cannot open file for hashing")
 
         val livePHash = try {
             val bmp = context.contentResolver.openInputStream(fileUri)?.use { stream ->
@@ -65,9 +71,9 @@ class VerificationHelper(
             )
             payload.perceptualHash.isNotEmpty() &&
                 securityManager.isVisuallySimilar(livePHash, payload.perceptualHash) -> VerificationOutcome(
-                message = "AUTHENTIC (Stamped Copy / Re-encoded)\n\n" +
+                message = "AUTHENTIC (Re-encoded / Compressed)\n\n" +
                     "File: $fileName\n" +
-                    "Status: Visual match with original image\n" +
+                    "Status: Visual hash match\n" +
                     "Issuer: ${payload.issuerId}\n" +
                     "Stamped: $formattedDate",
                 colorHex = "#F59E0B"
@@ -80,6 +86,35 @@ class VerificationHelper(
                 colorHex = "#D93025"
             )
         }
+    }
+
+    private fun extractPayloadFromBytes(bytes: ByteArray): String? {
+        // 1. Try decoding as QR image first
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        if (bitmap != null) {
+            val qrText = securityManager.decodeQRCode(bitmap)
+            if (!qrText.isNullOrBlank()) return qrText
+        }
+
+        // 2. Otherwise check if it's a text/stamp file containing RS_V1 / RS_V2 payload
+        val asText = try {
+            bytes.toString(Charsets.UTF_8)
+        } catch (_: Exception) {
+            ""
+        }
+
+        if (asText.isNotBlank()) {
+            val payloadLine = asText.lines().firstOrNull { it.trim().startsWith("Payload:") }
+            if (payloadLine != null) {
+                return payloadLine.substringAfter("Payload:").trim()
+            }
+            val directToken = asText.split(Regex("\\s+")).firstOrNull {
+                it.startsWith("RS_V2|") || it.startsWith("RS_V1|")
+            }
+            if (directToken != null) return directToken.trim()
+        }
+
+        return null
     }
 
     fun parseColor(colorHex: String): Int = Color.parseColor(colorHex)
