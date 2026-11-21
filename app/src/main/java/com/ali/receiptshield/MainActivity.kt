@@ -389,7 +389,7 @@ class MainActivity : AppCompatActivity() {
             val metaTv = TextView(this).apply {
                 text = "Issuer: ${record.issuerId} • ${dateFormatter.format(Date(record.timestamp))}\nSHA-256: ${record.hash.take(20)}... (Tap to preview QR)"
                 setTextColor(Color.parseColor("#5F6368"))
-                textSize = 12sp
+                textSize = 12f
                 setPadding(0, 8, 0, 0)
             }
 
