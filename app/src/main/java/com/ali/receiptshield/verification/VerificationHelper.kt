@@ -1,10 +1,10 @@
-
 package com.ali.receiptshield.verification
 
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.net.Uri
+import com.ali.receiptshield.crypto.ReceiptPayload // <-- FIX 1: ADDED THIS IMPORT
 import com.ali.receiptshield.crypto.ReceiptSecurityManager
 import com.ali.receiptshield.files.DocumentStampHelper
 import kotlinx.coroutines.Dispatchers
@@ -89,7 +89,8 @@ class VerificationHelper(
                 )
             }
 
-            val payload = securityManager.deserialize(qrContent)
+            // FIX 2: Call deserialize on ReceiptPayload instead of securityManager
+            val payload = ReceiptPayload.deserialize(qrContent)
 
             if (payload == null) {
                 return@withContext failure(
