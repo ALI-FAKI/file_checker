@@ -51,7 +51,6 @@ class DocumentStampHelper(
                 qrBitmap
             )
 
-            // FIX: Reduced size from 110f to 60f and margin from 36f to 24f
             val qrSize = 60f
             val margin = 24f
 
@@ -254,9 +253,10 @@ class DocumentStampHelper(
             val renderer = PDFRenderer(document)
 
             for (pageIndex in 0 until document.numberOfPages) {
+                // FIX: Increased DPI from 180f to 300f to read the smaller QR code
                 val bitmap = renderer.renderImageWithDPI(
                     pageIndex,
-                    180f
+                    300f
                 )
 
                 try {
