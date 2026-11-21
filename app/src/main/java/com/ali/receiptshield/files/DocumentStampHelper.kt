@@ -103,6 +103,7 @@ class DocumentStampHelper(
         val relationshipPath = "word/_rels/document.xml.rels"
 
         val relationshipsXml = entries[relationshipPath]
+            ?.toString(Charsets.UTF_8)
             ?: """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>"""
         
