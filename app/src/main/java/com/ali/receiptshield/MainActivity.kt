@@ -6,7 +6,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.view.View
-import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -22,26 +21,21 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var securityManager: ReceiptSecurityManager
-
-    // State for verification flow
     private var pendingVerifyFileUri: Uri? = null
 
-    // 1. Pick file to generate a stamp
     private val pickFileForStamp = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let { processStampCreation(it) }
     }
 
-    // 2. Pick file to verify
     private val pickFileToVerify = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
             pendingVerifyFileUri = it
-            binding.tvStatus.text = "File selected: ${getFileName(it)}\n\nNow select the QR Code image to verify against."
+            binding.tvStatus.text = "File selected: ${getFileName(it)}\n\nNow select the QR Code image."
             binding.tvStatus.setTextColor(Color.parseColor("#3C4043"))
             pickQrToVerify.launch("image/*")
         }
     }
 
-    // 3. Pick the QR code image to verify against
     private val pickQrToVerify = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let { qrUri ->
             pendingVerifyFileUri?.let { fileUri ->
@@ -57,13 +51,8 @@ class MainActivity : AppCompatActivity() {
 
         securityManager = ReceiptSecurityManager()
 
-        binding.btnCreateStamp.setOnClickListener {
-            pickFileForStamp.launch("*/*")
-        }
-
-        binding.btnVerifyDoc.setOnClickListener {
-            pickFileToVerify.launch("*/*")
-        }
+        binding.btnCreateStamp.setOnClickListener { pickFileForStamp.launch("*/*") }
+        binding.btnVerifyDoc.setOnClickListener { pickFileToVerify.launch("*/*") }
     }
 
     private fun processStampCreation(fileUri: Uri) {
@@ -72,27 +61,29 @@ class MainActivity : AppCompatActivity() {
             try {
                 val fileName = getFileName(fileUri)
                 val inputStream = contentResolver.openInputStream(fileUri)
-                
-                // Hash file
                 val hash = withContext(Dispatchers.IO) {
                     securityManager.hashInputStream(inputStream ?: throw Exception("Cannot open file"))
                 }
                 inputStream?.close()
 
-                showLoading(true, "Generating QR Code...")
-                val payload = securityManager.createStamp(hash, "SHOP_ZANZIBAR_01")
-                val payloadString = payload.serialize()
+                // Try to generate a perceptual hash (only works for images)
+                val pHash = withContext(Dispatchers.IO) {
+                    try {
+                        val bmp = contentResolver.openInputStream(fileUri)?.use { BitmapFactory.decodeStream(it) }
+                        if (bmp != null) securityManager.computePerceptualHash(bmp) else ""
+                    } catch (e: Exception) { "" }
+                }
 
-                // Generate QR
+                val payload = securityManager.createStamp(hash, pHash, "SHOP_ZANZIBAR_01")
                 val qrBitmap = withContext(Dispatchers.Default) {
-                    securityManager.generateQRCodeBitmap(payloadString)
+                    securityManager.generateQRCodeBitmap(payload.serialize())
                 }
 
                 withContext(Dispatchers.Main) {
                     binding.ivQrPreview.setImageBitmap(qrBitmap)
                     binding.ivQrPreview.visibility = View.VISIBLE
                     binding.tvStatus.setTextColor(Color.parseColor("#0F9D58"))
-                    binding.tvStatus.text = "✅ Stamp Created!\n\nFile: $fileName\n\nHash: ${hash.take(16)}...\nIssuer: ${payload.issuerId}\nDate: ${Date(payload.timestamp)}"
+                    binding.tvStatus.text = "✅ Stamp Created!\n\nFile: $fileName\n\nSHA-256: ${hash.take(16)}...\nIssuer: ${payload.issuerId}\nDate: ${Date(payload.timestamp)}"
                     showLoading(false, null)
                 }
             } catch (e: Exception) {
@@ -110,36 +101,46 @@ class MainActivity : AppCompatActivity() {
             try {
                 val fileName = getFileName(fileUri)
 
-                // 1. Decode QR Image
-                val qrInputStream = contentResolver.openInputStream(qrUri)
-                val qrBitmap = BitmapFactory.decodeStream(qrInputStream)
-                qrInputStream?.close()
-                
+                // 1. Decode QR
+                val qrBitmap = contentResolver.openInputStream(qrUri)?.use { BitmapFactory.decodeStream(it) }
                 val payloadString = withContext(Dispatchers.Default) {
                     securityManager.decodeQRCode(qrBitmap ?: throw Exception("Cannot read QR Image"))
-                } ?: throw Exception("No valid QR code found in the selected image.")
+                } ?: throw Exception("No valid QR code found.")
 
                 val payload = ReceiptPayload.deserialize(payloadString)
                     ?: throw Exception("Invalid ReceiptShield payload format.")
 
-                // 2. Hash the original document
-                val fileInputStream = contentResolver.openInputStream(fileUri)
+                // 2. Compute hashes of the live file
                 val liveHash = withContext(Dispatchers.IO) {
-                    securityManager.hashInputStream(fileInputStream ?: throw Exception("Cannot open file"))
+                    contentResolver.openInputStream(fileUri)?.use { securityManager.hashInputStream(it) }
+                        ?: throw Exception("Cannot open file")
                 }
-                fileInputStream?.close()
 
-                // 3. Compare Hashes
-                val isAuthentic = securityManager.verifyHash(liveHash, payload)
+                val livePHash = withContext(Dispatchers.IO) {
+                    try {
+                        val bmp = contentResolver.openInputStream(fileUri)?.use { BitmapFactory.decodeStream(it) }
+                        if (bmp != null) securityManager.computePerceptualHash(bmp) else ""
+                    } catch (e: Exception) { "" }
+                }
 
+                // 3. Verification Logic
                 withContext(Dispatchers.Main) {
                     binding.ivQrPreview.visibility = View.GONE
-                    if (isAuthentic) {
+                    
+                    if (liveHash.equals(payload.fileHash, ignoreCase = true)) {
+                        // Perfect match
                         binding.tvStatus.setTextColor(Color.parseColor("#0F9D58")) // Green
-                        binding.tvStatus.text = "✅ AUTHENTIC\n\nFile: $fileName\n\nThis document matches the original stamp perfectly.\n\nIssuer: ${payload.issuerId}\nDate: ${Date(payload.timestamp)}"
-                    } else {
+                        binding.tvStatus.text = "✅ 100% AUTHENTIC\n\nFile: $fileName\n\nThe file is unmodified.\n\nIssuer: ${payload.issuerId}\nDate: ${Date(payload.timestamp)}"
+                    } 
+                    else if (payload.perceptualHash.isNotEmpty() && securityManager.isVisuallySimilar(livePHash, payload.perceptualHash)) {
+                        // Visual match, but binary changed (WhatsApp compression)
+                        binding.tvStatus.setTextColor(Color.parseColor("#F59E0B")) // Amber/Orange
+                        binding.tvStatus.text = "⚠️ AUTHENTIC (Re-compressed)\n\nFile: $fileName\n\nThe visual content matches the original, but the file was compressed/re-encoded (e.g., sent via WhatsApp).\n\nIssuer: ${payload.issuerId}\nDate: ${Date(payload.timestamp)}"
+                    } 
+                    else {
+                        // Tampered
                         binding.tvStatus.setTextColor(Color.RED)
-                        binding.tvStatus.text = "❌ TAMPERED / FORGED\n\nFile: $fileName\n\nHash mismatch! This document has been modified since the stamp was created.\n\nExpected: ${payload.fileHash.take(16)}...\nActual: ${liveHash.take(16)}..."
+                        binding.tvStatus.text = "❌ TAMPERED / FORGED\n\nFile: $fileName\n\nThe visual content or binary has been altered. This document is not authentic.\n\nExpected: ${payload.fileHash.take(16)}...\nActual: ${liveHash.take(16)}..."
                     }
                     showLoading(false, null)
                 }
@@ -166,16 +167,12 @@ class MainActivity : AppCompatActivity() {
                     val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                     if (index != -1) result = cursor.getString(index)
                 }
-            } finally {
-                cursor?.close()
-            }
+            } finally { cursor?.close() }
         }
         if (result == null) {
             result = uri.path
             val cut = result?.lastIndexOf('/')
-            if (cut != null && cut != -1) {
-                result = result.substring(cut + 1)
-            }
+            if (cut != null && cut != -1) result = result.substring(cut + 1)
         }
         return result ?: "Unknown File"
     }
