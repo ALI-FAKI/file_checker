@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.view.View
+import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -46,13 +47,23 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+        try {
+            binding = ActivityMainBinding.inflate(layoutInflater)
+            setContentView(binding.root)
 
-        securityManager = ReceiptSecurityManager()
+            securityManager = ReceiptSecurityManager()
 
-        binding.btnCreateStamp.setOnClickListener { pickFileForStamp.launch("*/*") }
-        binding.btnVerifyDoc.setOnClickListener { pickFileToVerify.launch("*/*") }
+            binding.btnCreateStamp.setOnClickListener { pickFileForStamp.launch("*/*") }
+            binding.btnVerifyDoc.setOnClickListener { pickFileToVerify.launch("*/*") }
+        } catch (t: Throwable) {
+            val errorView = TextView(this).apply {
+                setPadding(48, 48, 48, 48)
+                setTextColor(Color.RED)
+                textSize = 14f
+                text = "Launch Error:\n${t::class.java.name}: ${t.message}\n\n${t.stackTrace.take(8).joinToString("\n")}"
+            }
+            setContentView(errorView)
+        }
     }
 
     private fun processStampCreation(fileUri: Uri) {
@@ -60,11 +71,11 @@ class MainActivity : AppCompatActivity() {
             showLoading(true, "Hashing file...")
             try {
                 val fileName = getFileName(fileUri)
-                val inputStream = contentResolver.openInputStream(fileUri)
                 val hash = withContext(Dispatchers.IO) {
-                    securityManager.hashInputStream(inputStream ?: throw Exception("Cannot open file"))
+                    contentResolver.openInputStream(fileUri)?.use { stream ->
+                        securityManager.hashInputStream(stream)
+                    } ?: throw Exception("Cannot open file")
                 }
-                inputStream?.close()
 
                 // Try to generate a perceptual hash (only works for images)
                 val pHash = withContext(Dispatchers.IO) {
@@ -102,7 +113,9 @@ class MainActivity : AppCompatActivity() {
                 val fileName = getFileName(fileUri)
 
                 // 1. Decode QR
-                val qrBitmap = contentResolver.openInputStream(qrUri)?.use { BitmapFactory.decodeStream(it) }
+                val qrBitmap = withContext(Dispatchers.IO) {
+                    contentResolver.openInputStream(qrUri)?.use { BitmapFactory.decodeStream(it) }
+                }
                 val payloadString = withContext(Dispatchers.Default) {
                     securityManager.decodeQRCode(qrBitmap ?: throw Exception("Cannot read QR Image"))
                 } ?: throw Exception("No valid QR code found.")
@@ -128,15 +141,12 @@ class MainActivity : AppCompatActivity() {
                     binding.ivQrPreview.visibility = View.GONE
 
                     if (liveHash.equals(payload.fileHash, ignoreCase = true)) {
-                        // Perfect match
-                        binding.tvStatus.setTextColor(Color.parseColor("#0F9D58")) // Green
+                        binding.tvStatus.setTextColor(Color.parseColor("#0F9D58"))
                         binding.tvStatus.text = "✅ 100% AUTHENTIC\n\nFile: $fileName\n\nThe file is unmodified.\n\nIssuer: ${payload.issuerId}\nDate: ${Date(payload.timestamp)}"
                     } else if (payload.perceptualHash.isNotEmpty() && securityManager.isVisuallySimilar(livePHash, payload.perceptualHash)) {
-                        // Visual match, but binary changed (WhatsApp compression)
-                        binding.tvStatus.setTextColor(Color.parseColor("#F59E0B")) // Amber/Orange
+                        binding.tvStatus.setTextColor(Color.parseColor("#F59E0B"))
                         binding.tvStatus.text = "⚠️ AUTHENTIC (Re-compressed)\n\nFile: $fileName\n\nThe visual content matches the original, but the file was compressed/re-encoded (e.g., sent via WhatsApp).\n\nIssuer: ${payload.issuerId}\nDate: ${Date(payload.timestamp)}"
                     } else {
-                        // Tampered
                         binding.tvStatus.setTextColor(Color.RED)
                         binding.tvStatus.text = "❌ TAMPERED / FORGED\n\nFile: $fileName\n\nThe visual content or binary has been altered. This document is not authentic.\n\nExpected: ${payload.fileHash.take(16)}...\nActual: ${liveHash.take(16)}..."
                     }
