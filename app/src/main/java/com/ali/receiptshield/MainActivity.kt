@@ -7,10 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.RectF
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
@@ -30,7 +27,12 @@ import com.ali.receiptshield.data.StampedRecord
 import com.ali.receiptshield.databinding.ActivityMainBinding
 import com.ali.receiptshield.files.DocumentStampHelper
 import com.ali.receiptshield.files.DocxSignatureProcessor
+import com.ali.receiptshield.files.ImageStampProcessor
+import com.ali.receiptshield.files.StampConfiguration
 import com.ali.receiptshield.files.StampFileHelper
+import com.ali.receiptshield.files.StampMode
+import com.ali.receiptshield.qr.QrPlacement
+import com.ali.receiptshield.qr.QrPlacementEditorActivity
 import com.ali.receiptshield.signature.DocumentSignature
 import com.ali.receiptshield.signature.SignatureEditorActivity
 import com.ali.receiptshield.signature.SignaturePlacement
@@ -58,30 +60,38 @@ class MainActivity : AppCompatActivity() {
     private var latestOutputFile: File? = null
     private var latestMimeType: String = "*/*"
 
-    // Pending signature workflow data.
+    // Pending stamping workflow.
     private var pendingStampUri: Uri? = null
     private var pendingSignatureFile: File? = null
     private var pendingStampExtension: String = ""
+    private var pendingStampMode: StampMode = StampMode.QR_ONLY
+    private var pendingQrPlacement: QrPlacement = QrPlacement()
+    private var pendingSignaturePlacement: SignaturePlacement =
+        SignaturePlacement()
+
+    private var pendingPayloadSerialized: String = ""
+    private var pendingOriginalHash: String = ""
+    private var pendingIssuer: String = ""
+    private var pendingTimestamp: Long = 0L
 
     private val dateFormatter by lazy {
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     }
 
-    // Select a file to stamp.
     private val pickFileForStamp =
-        registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
             uri?.let { promptStampOptions(it) }
         }
 
-    // Select a stamped file to verify.
     private val pickFileToVerify =
-        registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
             uri?.let { runVerification(it) }
         }
 
-    // Camera launcher for QR scanning.
     private val takePictureLauncher =
-        registerForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        registerForActivityResult(
+            ActivityResultContracts.TakePicturePreview()
+        ) { bitmap ->
             if (bitmap != null) {
                 processCameraScan(bitmap)
             } else {
@@ -93,19 +103,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-    // Launch signature creation.
+    // Signature creation result.
     private val signatureEditorLauncher =
         registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
 
             if (result.resultCode != Activity.RESULT_OK) {
-                clearPendingSignatureWorkflow()
-                Toast.makeText(
-                    this,
-                    "Signature creation cancelled",
-                    Toast.LENGTH_SHORT
-                ).show()
+                cancelPendingWorkflow("Signature creation cancelled")
                 return@registerForActivityResult
             }
 
@@ -114,111 +119,39 @@ class MainActivity : AppCompatActivity() {
             )
 
             if (signaturePath.isNullOrBlank()) {
-                clearPendingSignatureWorkflow()
-                Toast.makeText(
-                    this,
-                    "Signature file was not returned",
-                    Toast.LENGTH_LONG
-                ).show()
+                cancelPendingWorkflow("Signature file was not returned")
                 return@registerForActivityResult
             }
 
             val signatureFile = File(signaturePath)
 
             if (!signatureFile.exists() || signatureFile.length() == 0L) {
-                clearPendingSignatureWorkflow()
-                Toast.makeText(
-                    this,
-                    "Signature image is unavailable",
-                    Toast.LENGTH_LONG
-                ).show()
+                cancelPendingWorkflow("Signature image is unavailable")
                 return@registerForActivityResult
             }
 
             pendingSignatureFile = signatureFile
-
-            val documentUri = pendingStampUri
-
-            if (documentUri == null) {
-                clearPendingSignatureWorkflow()
-                return@registerForActivityResult
-            }
-
-            when (pendingStampExtension) {
-
-                "pdf" -> {
-                    launchSignaturePlacementEditor(
-                        documentUri,
-                        signatureFile
-                    )
-                }
-
-                "docx" -> {
-                    val signature = DocumentSignature(
-                        signatureFile = signatureFile
-                    )
-
-                    processStampCreation(
-                        documentUri,
-                        signature
-                    )
-
-                    clearPendingSignatureWorkflow()
-                }
-
-                else -> {
-                    clearPendingSignatureWorkflow()
-
-                    Toast.makeText(
-                        this,
-                        "Signatures are currently supported for PDF and DOCX files",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
+            continueAfterSignatureCreation()
         }
 
-    // Receive signature placement from the PDF placement editor.
+    // Signature placement result.
     private val signaturePlacementLauncher =
         registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
 
             if (result.resultCode != Activity.RESULT_OK) {
-                clearPendingSignatureWorkflow()
-
-                Toast.makeText(
-                    this,
-                    "Signature positioning cancelled",
-                    Toast.LENGTH_SHORT
-                ).show()
-
-                return@registerForActivityResult
-            }
-
-            val documentUri = pendingStampUri
-            val signatureFile = pendingSignatureFile
-
-            if (documentUri == null || signatureFile == null) {
-                clearPendingSignatureWorkflow()
-
-                Toast.makeText(
-                    this,
-                    "Document or signature is missing",
-                    Toast.LENGTH_LONG
-                ).show()
-
+                cancelPendingWorkflow("Signature positioning cancelled")
                 return@registerForActivityResult
             }
 
             val data = result.data
-
             if (data == null) {
-                clearPendingSignatureWorkflow()
+                cancelPendingWorkflow("Signature placement was not returned")
                 return@registerForActivityResult
             }
 
-            val placement = SignaturePlacement(
+            pendingSignaturePlacement = SignaturePlacement(
                 pageIndex = data.getIntExtra(
                     SignaturePlacementEditorActivity.EXTRA_PAGE_INDEX,
                     0
@@ -237,17 +170,46 @@ class MainActivity : AppCompatActivity() {
                 )
             ).normalized()
 
-            val signature = DocumentSignature(
-                signatureFile = signatureFile,
-                placement = placement
-            )
+            continueAfterSignaturePlacement()
+        }
 
-            processStampCreation(
-                documentUri,
-                signature
-            )
+    // QR placement result.
+    private val qrPlacementLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
 
-            clearPendingSignatureWorkflow()
+            if (result.resultCode != Activity.RESULT_OK) {
+                cancelPendingWorkflow("QR positioning cancelled")
+                return@registerForActivityResult
+            }
+
+            val data = result.data
+            if (data == null) {
+                cancelPendingWorkflow("QR placement was not returned")
+                return@registerForActivityResult
+            }
+
+            pendingQrPlacement = QrPlacement(
+                pageIndex = data.getIntExtra(
+                    QrPlacementEditorActivity.EXTRA_PAGE_INDEX,
+                    0
+                ),
+                x = data.getFloatExtra(
+                    QrPlacementEditorActivity.EXTRA_X,
+                    0.68f
+                ),
+                y = data.getFloatExtra(
+                    QrPlacementEditorActivity.EXTRA_Y,
+                    0.72f
+                ),
+                width = data.getFloatExtra(
+                    QrPlacementEditorActivity.EXTRA_WIDTH,
+                    0.22f
+                )
+            ).normalized()
+
+            finishPendingWorkflow()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -287,7 +249,6 @@ class MainActivity : AppCompatActivity() {
                 setPadding(48, 48, 48, 48)
                 setTextColor(Color.RED)
                 textSize = 14f
-
                 text =
                     "Launch Error:\n${t::class.java.name}: ${t.message}\n\n" +
                     t.stackTrace.take(8).joinToString("\n")
@@ -298,7 +259,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------------------------------------------------
-    // SIGNATURE WORKFLOW
+    // STAMPING WORKFLOW
     // ---------------------------------------------------------
 
     private fun promptStampOptions(uri: Uri) {
@@ -310,31 +271,44 @@ class MainActivity : AppCompatActivity() {
                 .substringAfterLast('.', "")
                 .lowercase(Locale.ROOT)
 
-            if (extension != "pdf" && extension != "docx") {
-                processStampCreation(uri)
+            val supported = extension in listOf(
+                "pdf",
+                "docx",
+                "png",
+                "jpg",
+                "jpeg",
+                "webp",
+                "bmp"
+            )
+
+            if (!supported) {
+                Toast.makeText(
+                    this,
+                    "Supported formats: PDF, DOCX and images",
+                    Toast.LENGTH_LONG
+                ).show()
                 return
             }
 
-            pendingStampUri = uri
-            pendingStampExtension = extension
-            pendingSignatureFile = null
-
             AlertDialog.Builder(this)
                 .setTitle("Choose stamping method")
-                .setMessage(
-                    "Would you like to add a handwritten or typed signature " +
-                    "along with your ReceiptShield QR code?"
-                )
-                .setPositiveButton("QR + Signature") { _, _ ->
-                    launchSignatureEditor()
+                .setItems(
+                    arrayOf(
+                        "QR Code Only",
+                        "Signature Only",
+                        "QR Code + Signature"
+                    )
+                ) { _, selected ->
+
+                    val mode = when (selected) {
+                        0 -> StampMode.QR_ONLY
+                        1 -> StampMode.SIGNATURE_ONLY
+                        else -> StampMode.QR_AND_SIGNATURE
+                    }
+
+                    beginStampWorkflow(uri, extension, mode)
                 }
-                .setNegativeButton("QR Only") { _, _ ->
-                    clearPendingSignatureWorkflow()
-                    processStampCreation(uri)
-                }
-                .setNeutralButton("Cancel") { _, _ ->
-                    clearPendingSignatureWorkflow()
-                }
+                .setNegativeButton("Cancel", null)
                 .show()
 
         } catch (e: Exception) {
@@ -346,13 +320,120 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun launchSignatureEditor() {
-        val intent = Intent(
-            this,
-            SignatureEditorActivity::class.java
-        )
+    private fun beginStampWorkflow(
+        uri: Uri,
+        extension: String,
+        mode: StampMode
+    ) {
+        clearPendingWorkflow()
 
-        signatureEditorLauncher.launch(intent)
+        pendingStampUri = uri
+        pendingStampExtension = extension
+        pendingStampMode = mode
+
+        lifecycleScope.launch {
+
+            try {
+                showLoading(true, "Preparing stamping information...")
+
+                val originalBytes = withContext(Dispatchers.IO) {
+                    contentResolver.openInputStream(uri)?.use {
+                        it.readBytes()
+                    } ?: throw Exception("Cannot read selected file")
+                }
+
+                if (originalBytes.isEmpty()) {
+                    throw Exception("The selected file is empty")
+                }
+
+                val hash = withContext(Dispatchers.Default) {
+                    securityManager.hashInputStream(
+                        originalBytes.inputStream()
+                    )
+                }
+
+                var pHash = ""
+
+                if (mode.includesQr && extension !in listOf("pdf", "docx")) {
+                    val bitmap = withContext(Dispatchers.Default) {
+                        BitmapFactory.decodeByteArray(
+                            originalBytes,
+                            0,
+                            originalBytes.size
+                        )
+                    }
+
+                    if (bitmap != null) {
+                        try {
+                            pHash = withContext(Dispatchers.Default) {
+                                securityManager.computePerceptualHash(bitmap)
+                            }
+                        } finally {
+                            bitmap.recycle()
+                        }
+                    }
+                }
+
+                pendingOriginalHash = hash
+                pendingIssuer = repository.getIssuerId()
+
+                if (mode.includesQr) {
+                    val payload = securityManager.createStamp(
+                        hash,
+                        pHash,
+                        pendingIssuer
+                    )
+
+                    pendingPayloadSerialized = payload.serialize()
+                    pendingTimestamp = payload.timestamp
+                } else {
+                    // Signature-only must not create a QR payload.
+                    pendingPayloadSerialized = ""
+                    pendingTimestamp = System.currentTimeMillis()
+                }
+
+                showLoading(false, null)
+
+                if (mode.includesSignature) {
+                    launchSignatureEditor()
+                } else {
+                    continueAfterSignaturePlacement()
+                }
+
+            } catch (e: Exception) {
+                clearPendingWorkflow()
+                showLoading(
+                    false,
+                    "Error: ${e.message ?: "Unable to prepare file"}"
+                )
+            }
+        }
+    }
+
+    private fun launchSignatureEditor() {
+        signatureEditorLauncher.launch(
+            Intent(this, SignatureEditorActivity::class.java)
+        )
+    }
+
+    private fun continueAfterSignatureCreation() {
+
+        val uri = pendingStampUri
+        val signatureFile = pendingSignatureFile
+
+        if (uri == null || signatureFile == null) {
+            cancelPendingWorkflow("Document or signature is missing")
+            return
+        }
+
+        // DOCX currently uses the default floating placement.
+        if (pendingStampExtension == "docx") {
+            pendingSignaturePlacement = SignaturePlacement().normalized()
+            continueAfterSignaturePlacement()
+            return
+        }
+
+        launchSignaturePlacementEditor(uri, signatureFile)
     }
 
     private fun launchSignaturePlacementEditor(
@@ -363,12 +444,10 @@ class MainActivity : AppCompatActivity() {
             this,
             SignaturePlacementEditorActivity::class.java
         ).apply {
-
             putExtra(
                 SignaturePlacementEditorActivity.EXTRA_DOCUMENT_URI,
                 documentUri
             )
-
             putExtra(
                 SignaturePlacementEditorActivity.EXTRA_SIGNATURE_PATH,
                 signatureFile.absolutePath
@@ -378,10 +457,125 @@ class MainActivity : AppCompatActivity() {
         signaturePlacementLauncher.launch(intent)
     }
 
-    private fun clearPendingSignatureWorkflow() {
+    private fun continueAfterSignaturePlacement() {
+
+        if (pendingStampMode.includesQr) {
+            launchQrPlacementEditorIfSupported()
+        } else {
+            finishPendingWorkflow()
+        }
+    }
+
+    private fun launchQrPlacementEditorIfSupported() {
+
+        val uri = pendingStampUri
+
+        if (uri == null) {
+            cancelPendingWorkflow("Selected file is missing")
+            return
+        }
+
+        // DOCX does not use the PDF/image QR preview editor.
+        if (pendingStampExtension == "docx") {
+            pendingQrPlacement = QrPlacement().normalized()
+            finishPendingWorkflow()
+            return
+        }
+
+        if (pendingPayloadSerialized.isBlank()) {
+            cancelPendingWorkflow("QR information is missing")
+            return
+        }
+
+        val intent = Intent(
+            this,
+            QrPlacementEditorActivity::class.java
+        ).apply {
+            putExtra(
+                QrPlacementEditorActivity.EXTRA_DOCUMENT_URI,
+                uri
+            )
+            putExtra(
+                QrPlacementEditorActivity.EXTRA_QR_CONTENT,
+                pendingPayloadSerialized
+            )
+        }
+
+        qrPlacementLauncher.launch(intent)
+    }
+
+    private fun finishPendingWorkflow() {
+
+        val uri = pendingStampUri
+
+        if (uri == null) {
+            cancelPendingWorkflow("Selected file is missing")
+            return
+        }
+
+        val signature = if (pendingStampMode.includesSignature) {
+            val signatureFile = pendingSignatureFile
+
+            if (signatureFile == null) {
+                cancelPendingWorkflow("Signature image is missing")
+                return
+            }
+
+            DocumentSignature(
+                signatureFile = signatureFile,
+                placement = pendingSignaturePlacement
+            )
+        } else {
+            null
+        }
+
+        val payload = if (pendingStampMode.includesQr) {
+            ReceiptPayload.deserialize(pendingPayloadSerialized)
+                ?: run {
+                    cancelPendingWorkflow("QR information is invalid")
+                    return
+                }
+        } else {
+            null
+        }
+
+        processStampCreation(
+            fileUri = uri,
+            mode = pendingStampMode,
+            documentSignature = signature,
+            payload = payload,
+            qrPlacement = pendingQrPlacement,
+            originalHash = pendingOriginalHash,
+            issuer = pendingIssuer,
+            timestamp = pendingTimestamp
+        )
+
+        clearPendingWorkflow()
+    }
+
+    private fun cancelPendingWorkflow(message: String) {
+        clearPendingWorkflow()
+
+        Toast.makeText(
+            this,
+            message,
+            Toast.LENGTH_SHORT
+        ).show()
+
+        showLoading(false, null)
+    }
+
+    private fun clearPendingWorkflow() {
         pendingStampUri = null
         pendingSignatureFile = null
         pendingStampExtension = ""
+        pendingStampMode = StampMode.QR_ONLY
+        pendingQrPlacement = QrPlacement()
+        pendingSignaturePlacement = SignaturePlacement()
+        pendingPayloadSerialized = ""
+        pendingOriginalHash = ""
+        pendingIssuer = ""
+        pendingTimestamp = 0L
     }
 
     // ---------------------------------------------------------
@@ -479,7 +673,6 @@ class MainActivity : AppCompatActivity() {
                     "Create a stamped file first",
                     Toast.LENGTH_SHORT
                 ).show()
-
                 return@setOnClickListener
             }
 
@@ -496,7 +689,6 @@ class MainActivity : AppCompatActivity() {
                     "Create a stamped file first",
                     Toast.LENGTH_SHORT
                 ).show()
-
                 return@setOnClickListener
             }
 
@@ -543,12 +735,18 @@ class MainActivity : AppCompatActivity() {
 
     private fun processStampCreation(
         fileUri: Uri,
-        documentSignature: DocumentSignature? = null
+        mode: StampMode,
+        documentSignature: DocumentSignature?,
+        payload: ReceiptPayload?,
+        qrPlacement: QrPlacement,
+        originalHash: String,
+        issuer: String,
+        timestamp: Long
     ) {
 
         lifecycleScope.launch {
 
-            showLoading(true, "Preparing file...")
+            showLoading(true, "Processing selected file...")
             binding.fileActionsRow.visibility = View.GONE
 
             var decodedBitmap: Bitmap? = null
@@ -584,57 +782,31 @@ class MainActivity : AppCompatActivity() {
                 val isImage = decodedBitmap != null
 
                 if (!isImage && extension !in listOf("pdf", "docx")) {
-                    throw Exception(
-                        when (extension) {
-                            "doc" ->
-                                "Legacy DOC files are not supported. Save the file as DOCX first."
-
-                            else ->
-                                "Unsupported file format. Supported formats are PDF, DOCX and images."
-                        }
-                    )
+                    throw Exception("Unsupported file format")
                 }
 
-                if (documentSignature != null) {
-                    if (extension !in listOf("pdf", "docx")) {
-                        throw Exception(
-                            "Signatures are supported only for PDF and DOCX files"
-                        )
-                    }
+                if (mode.includesSignature) {
+                    val signature = documentSignature
+                        ?: throw Exception("Signature is missing")
 
-                    if (!documentSignature.isReadyForProcessing()) {
-                        throw Exception(
-                            "The signature image is invalid or unavailable"
-                        )
+                    if (!signature.isReadyForProcessing()) {
+                        throw Exception("The signature image is invalid")
                     }
                 }
 
-                val hash = withContext(Dispatchers.Default) {
-                    securityManager.hashInputStream(
-                        originalBytes.inputStream()
-                    )
+                if (mode.includesQr && payload == null) {
+                    throw Exception("QR payload is missing")
                 }
 
-                val pHash = if (isImage && decodedBitmap != null) {
-                    withContext(Dispatchers.Default) {
-                        securityManager.computePerceptualHash(
-                            decodedBitmap!!
-                        )
-                    }
-                } else {
-                    ""
+                val serialized = payload?.serialize().orEmpty()
+
+                if (mode.includesQr) {
+                    showLoading(true, "Generating QR code...")
+
+                    qrBitmap = withContext(Dispatchers.Default) {
+                        securityManager.generateQRCodeBitmap(serialized)
+                    } ?: throw Exception("Failed to generate QR code")
                 }
-
-                val issuer = repository.getIssuerId()
-
-                val payload = securityManager.createStamp(
-                    hash,
-                    pHash,
-                    issuer
-                )
-
-                val serialized = payload.serialize()
-                val timestamp = payload.timestamp
 
                 val dir = fileHelper.createStampsDirectory()
 
@@ -642,16 +814,15 @@ class MainActivity : AppCompatActivity() {
                     .substringBeforeLast('.')
                     .replace(Regex("[^A-Za-z0-9_-]"), "_")
 
+                val modeSuffix = when (mode) {
+                    StampMode.QR_ONLY -> "QR"
+                    StampMode.SIGNATURE_ONLY -> "Signature"
+                    StampMode.QR_AND_SIGNATURE -> "QR_Signature"
+                }
+
                 val outputFile: File
                 val outputMime: String
-                val modeNote: String
                 val isDocumentStamp: Boolean
-
-                showLoading(true, "Generating QR code...")
-
-                qrBitmap = withContext(Dispatchers.Default) {
-                    securityManager.generateQRCodeBitmap(serialized)
-                } ?: throw Exception("Failed to generate QR code")
 
                 // -------------------------------------------------
                 // PDF
@@ -661,39 +832,44 @@ class MainActivity : AppCompatActivity() {
 
                     outputFile = File(
                         dir,
-                        "${cleanBase}_${timestamp}_Stamped.pdf"
+                        "${cleanBase}_${timestamp}_${modeSuffix}.pdf"
                     )
 
                     withContext(Dispatchers.IO) {
 
-                        if (documentSignature != null) {
+                        when (mode) {
 
-                            documentStampHelper.stampPdfWithSignature(
-                                originalBytes,
-                                qrBitmap!!,
-                                documentSignature,
-                                outputFile
-                            )
+                            StampMode.QR_ONLY -> {
+                                documentStampHelper.stampPdfWithQrPlacement(
+                                    originalBytes,
+                                    qrBitmap!!,
+                                    qrPlacement,
+                                    outputFile
+                                )
+                            }
 
-                        } else {
+                            StampMode.SIGNATURE_ONLY -> {
+                                documentStampHelper.stampPdfSignatureOnly(
+                                    originalBytes,
+                                    documentSignature!!,
+                                    outputFile
+                                )
+                            }
 
-                            documentStampHelper.stampPdf(
-                                originalBytes,
-                                qrBitmap!!,
-                                outputFile
-                            )
+                            StampMode.QR_AND_SIGNATURE -> {
+                                documentStampHelper
+                                    .stampPdfWithSignatureAndQrPlacement(
+                                        originalBytes,
+                                        qrBitmap!!,
+                                        qrPlacement,
+                                        documentSignature!!,
+                                        outputFile
+                                    )
+                            }
                         }
                     }
 
                     outputMime = "application/pdf"
-
-                    modeNote =
-                        if (documentSignature != null) {
-                            "ReceiptShield QR and signature embedded in PDF"
-                        } else {
-                            "ReceiptShield QR embedded in PDF"
-                        }
-
                     isDocumentStamp = true
 
                 // -------------------------------------------------
@@ -704,48 +880,54 @@ class MainActivity : AppCompatActivity() {
 
                     outputFile = File(
                         dir,
-                        "${cleanBase}_${timestamp}_Stamped.docx"
+                        "${cleanBase}_${timestamp}_${modeSuffix}.docx"
                     )
 
                     withContext(Dispatchers.IO) {
 
-                        if (documentSignature != null) {
+                        when (mode) {
 
-                            DocxSignatureProcessor.stampDocxWithSignature(
-                                originalBytes,
-                                documentSignature,
-                                outputFile
-                            )
+                            StampMode.QR_ONLY -> {
+                                documentStampHelper.stampDocxWithQrPlacement(
+                                    originalBytes,
+                                    qrBitmap!!,
+                                    qrPlacement,
+                                    outputFile
+                                )
+                            }
 
-                            // Add QR to the DOCX as well.
-                            val signatureStampedBytes =
-                                outputFile.readBytes()
+                            StampMode.SIGNATURE_ONLY -> {
+                                DocxSignatureProcessor.stampDocxWithSignature(
+                                    originalBytes,
+                                    documentSignature!!,
+                                    outputFile
+                                )
+                            }
 
-                            documentStampHelper.stampDocx(
-                                signatureStampedBytes,
-                                qrBitmap!!,
-                                outputFile
-                            )
+                            StampMode.QR_AND_SIGNATURE -> {
+                                // First insert the signature.
+                                DocxSignatureProcessor.stampDocxWithSignature(
+                                    originalBytes,
+                                    documentSignature!!,
+                                    outputFile
+                                )
 
-                        } else {
+                                // Then insert the QR independently.
+                                val signatureStampedBytes =
+                                    outputFile.readBytes()
 
-                            documentStampHelper.stampDocx(
-                                originalBytes,
-                                qrBitmap!!,
-                                outputFile
-                            )
+                                documentStampHelper.stampDocxWithQrPlacement(
+                                    signatureStampedBytes,
+                                    qrBitmap!!,
+                                    qrPlacement,
+                                    outputFile
+                                )
+                            }
                         }
                     }
 
                     outputMime =
                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-
-                    modeNote =
-                        if (documentSignature != null) {
-                            "ReceiptShield QR and signature embedded in DOCX"
-                        } else {
-                            "ReceiptShield QR embedded in DOCX"
-                        }
 
                     isDocumentStamp = true
 
@@ -755,57 +937,67 @@ class MainActivity : AppCompatActivity() {
 
                 } else {
 
-                    if (documentSignature != null) {
-                        throw Exception(
-                            "Signature stamping is not available for images yet"
-                        )
-                    }
-
                     val sourceBitmap = decodedBitmap
                         ?: throw Exception("Unable to decode image")
 
                     outputFile = File(
                         dir,
-                        "${cleanBase}_${timestamp}_Stamped.png"
+                        "${cleanBase}_${timestamp}_${modeSuffix}.png"
                     )
 
-                    val stampedBitmap = withContext(Dispatchers.Default) {
-                        overlayQrOnImage(
-                            sourceBitmap,
-                            qrBitmap!!
-                        )
-                    }
+                    val sourceFile = File(
+                        cacheDir,
+                        "receiptshield_source_${System.currentTimeMillis()}.png"
+                    )
 
                     try {
                         withContext(Dispatchers.IO) {
-                            FileOutputStream(outputFile).use { output ->
-
-                                stampedBitmap.compress(
+                            FileOutputStream(sourceFile).use { output ->
+                                sourceBitmap.compress(
                                     Bitmap.CompressFormat.PNG,
                                     100,
                                     output
                                 )
                             }
                         }
+
+                        val configuration = StampConfiguration(
+                            mode = mode,
+                            qrPlacement = qrPlacement,
+                            signature = documentSignature
+                        )
+
+                        withContext(Dispatchers.IO) {
+                            ImageStampProcessor.stampImage(
+                                sourceFile,
+                                qrBitmap,
+                                configuration,
+                                outputFile
+                            )
+                        }
+
                     } finally {
-                        stampedBitmap.recycle()
+                        sourceFile.delete()
                     }
 
                     outputMime = "image/png"
-                    modeNote = "ReceiptShield QR embedded in image"
                     isDocumentStamp = false
                 }
 
-                // Save stamp history.
+                if (!outputFile.exists() || outputFile.length() == 0L) {
+                    throw Exception("Stamped output file was not created")
+                }
+
+                // Save history. Empty payload means signature-only.
                 repository.saveRecord(
                     StampedRecord(
                         displayName = fileName,
                         outputFilePath = outputFile.absolutePath,
                         mimeType = outputMime,
                         isDocumentStamp = isDocumentStamp,
-                        hash = hash,
-                        issuerId = payload.issuerId,
-                        timestamp = payload.timestamp,
+                        hash = originalHash,
+                        issuerId = issuer,
+                        timestamp = timestamp,
                         payloadSerialized = serialized
                     )
                 )
@@ -819,14 +1011,20 @@ class MainActivity : AppCompatActivity() {
                     Color.parseColor("#0F9D58")
                 )
 
+                val modeDescription = when (mode) {
+                    StampMode.QR_ONLY -> "QR Code Only"
+                    StampMode.SIGNATURE_ONLY -> "Signature Only"
+                    StampMode.QR_AND_SIGNATURE -> "QR Code + Signature"
+                }
+
                 binding.tvStatus.text =
                     "Stamp Processed!\n\n" +
                     "File: $fileName\n" +
                     "Output: ${outputFile.name}\n" +
-                    "Mode: $modeNote\n" +
-                    "Issuer: ${payload.issuerId}\n" +
-                    "Date: ${dateFormatter.format(Date(payload.timestamp))}\n" +
-                    "SHA-256: ${hash.take(24)}..."
+                    "Mode: $modeDescription\n" +
+                    "Issuer: $issuer\n" +
+                    "Date: ${dateFormatter.format(Date(timestamp))}\n" +
+                    "SHA-256: ${originalHash.take(24)}..."
 
                 renderStampedFiles()
                 showLoading(false, null)
@@ -841,77 +1039,10 @@ class MainActivity : AppCompatActivity() {
                 )
 
             } finally {
-
                 decodedBitmap?.recycle()
                 qrBitmap?.recycle()
             }
         }
-    }
-
-    // ---------------------------------------------------------
-    // ADD QR CODE TO IMAGE
-    // ---------------------------------------------------------
-
-    private fun overlayQrOnImage(
-        original: Bitmap,
-        qr: Bitmap
-    ): Bitmap {
-
-        val result = original.copy(
-            Bitmap.Config.ARGB_8888,
-            true
-        ) ?: throw Exception("Unable to prepare image")
-
-        val canvas = Canvas(result)
-
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            isFilterBitmap = true
-            isDither = true
-        }
-
-        val qrSize =
-            (result.width.coerceAtMost(result.height) * 0.15f)
-                .coerceAtLeast(80f)
-                .coerceAtMost(250f)
-
-        val margin =
-            (result.width.coerceAtMost(result.height) * 0.03f)
-                .coerceAtLeast(12f)
-
-        val left = result.width - qrSize - margin
-        val top = result.height - qrSize - margin
-
-        val backgroundRect = RectF(
-            left - 10f,
-            top - 10f,
-            left + qrSize + 10f,
-            top + qrSize + 10f
-        )
-
-        paint.color = Color.WHITE
-
-        canvas.drawRoundRect(
-            backgroundRect,
-            8f,
-            8f,
-            paint
-        )
-
-        val destination = RectF(
-            left,
-            top,
-            left + qrSize,
-            top + qrSize
-        )
-
-        canvas.drawBitmap(
-            qr,
-            null,
-            destination,
-            paint
-        )
-
-        return result
     }
 
     // ---------------------------------------------------------
@@ -958,7 +1089,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------------------------------------------------
-    // PROCESS CAMERA SCAN
+    // CAMERA QR SCAN
     // ---------------------------------------------------------
 
     private fun processCameraScan(bitmap: Bitmap) {
@@ -983,24 +1114,18 @@ class MainActivity : AppCompatActivity() {
                 binding.progressBar.visibility = View.GONE
 
                 if (payloadString.isNullOrBlank()) {
-
                     binding.tvVerifyStatus.setTextColor(Color.RED)
-
                     binding.tvVerifyStatus.text =
-                        "❌ No ReceiptShield QR code found in the image."
-
+                        "No ReceiptShield QR code found in the image."
                     return@launch
                 }
 
                 val payload = ReceiptPayload.deserialize(payloadString)
 
                 if (payload == null) {
-
                     binding.tvVerifyStatus.setTextColor(Color.RED)
-
                     binding.tvVerifyStatus.text =
-                        "❌ Invalid QR format. This is not a ReceiptShield stamp."
-
+                        "Invalid QR format. This is not a ReceiptShield stamp."
                     return@launch
                 }
 
@@ -1009,12 +1134,12 @@ class MainActivity : AppCompatActivity() {
                 )
 
                 binding.tvVerifyStatus.text = """
-                    ✅ VALID STAMP DETECTED
-                    
+                    VALID STAMP DETECTED
+
                     Issuer ID: ${payload.issuerId}
                     Issued: ${dateFormatter.format(Date(payload.timestamp))}
-                    
-                    Note: Camera scans verify the Issuer and Date. To verify file integrity, please use the "Pick File to Verify" button.
+
+                    Note: Camera scans verify the Issuer and Date. To verify file integrity, use the "Pick File to Verify" button.
                 """.trimIndent()
 
             } catch (e: Exception) {
@@ -1044,10 +1169,8 @@ class MainActivity : AppCompatActivity() {
         if (records.isEmpty()) {
 
             val emptyView = TextView(this).apply {
-
                 text =
                     "No stamped files yet. Pick a document or file on the Stamp tab to see it here."
-
                 setTextColor(Color.parseColor("#5F6368"))
                 textSize = 14f
                 setPadding(24, 24, 24, 24)
@@ -1071,28 +1194,34 @@ class MainActivity : AppCompatActivity() {
                 setBackgroundColor(Color.WHITE)
                 setPadding(28, 24, 28, 24)
 
-                val params = LinearLayout.LayoutParams(
+                layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
-                )
-
-                params.bottomMargin = 20
-                layoutParams = params
+                ).apply {
+                    bottomMargin = 20
+                }
             }
 
             val titleTv = TextView(this).apply {
-
                 text = record.displayName
                 setTextColor(Color.parseColor("#1A1C1E"))
                 textSize = 15f
                 setTypeface(typeface, Typeface.BOLD)
             }
 
+            val modeLabel = when {
+                record.payloadSerialized.isBlank() ->
+                    "Signature Only"
+
+                else ->
+                    "QR-enabled stamp"
+            }
+
             val typeLabel =
                 if (record.isDocumentStamp) {
-                    "Document Stamp (QR embedded)"
+                    "Document • $modeLabel"
                 } else {
-                    "Image Stamp (QR embedded)"
+                    "Image • $modeLabel"
                 }
 
             val metaTv = TextView(this).apply {
@@ -1190,18 +1319,14 @@ class MainActivity : AppCompatActivity() {
         file: File,
         mimeType: String
     ) {
-
         try {
-
             startActivity(
                 Intent.createChooser(
                     fileHelper.buildOpenIntent(file, mimeType),
                     "Open File"
                 )
             )
-
         } catch (_: Exception) {
-
             Toast.makeText(
                 this,
                 "No app found to open this file type",
@@ -1218,18 +1343,14 @@ class MainActivity : AppCompatActivity() {
         file: File,
         mimeType: String
     ) {
-
         try {
-
             startActivity(
                 Intent.createChooser(
                     fileHelper.buildShareIntent(file, mimeType),
                     "Share File"
                 )
             )
-
         } catch (e: Exception) {
-
             Toast.makeText(
                 this,
                 "Share failed: ${e.message}",
@@ -1250,7 +1371,6 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
 
             try {
-
                 val savedLocation = withContext(Dispatchers.IO) {
                     fileHelper.saveToDevice(file, mimeType)
                 }
@@ -1262,7 +1382,6 @@ class MainActivity : AppCompatActivity() {
                 ).show()
 
             } catch (e: Exception) {
-
                 Toast.makeText(
                     this@MainActivity,
                     "Save failed: ${e.message}",
@@ -1280,7 +1399,6 @@ class MainActivity : AppCompatActivity() {
         isLoading: Boolean,
         message: String?
     ) {
-
         binding.progressBar.visibility =
             if (isLoading) View.VISIBLE else View.GONE
 
