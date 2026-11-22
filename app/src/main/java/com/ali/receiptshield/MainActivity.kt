@@ -23,6 +23,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.ali.receiptshield.crypto.ReceiptPayload
 import com.ali.receiptshield.crypto.ReceiptSecurityManager
+import com.ali.receiptshield.crypto.TrustedIssuerRegistry
 import com.ali.receiptshield.data.StampRepository
 import com.ali.receiptshield.data.StampedRecord
 import com.ali.receiptshield.databinding.ActivityMainBinding
@@ -1114,7 +1115,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------------------------------------------------
-    // CAMERA QR SCAN
+    // CAMERA QR SCAN - DIGITAL SIGNATURE + TRUST CHECK
     // ---------------------------------------------------------
 
     private fun processCameraScan(bitmap: Bitmap) {
@@ -1128,7 +1129,7 @@ class MainActivity : AppCompatActivity() {
             )
 
             binding.tvVerifyStatus.text =
-                "Scanning QR code from camera..."
+                "Scanning QR code and checking digital signature..."
 
             try {
 
@@ -1136,9 +1137,8 @@ class MainActivity : AppCompatActivity() {
                     securityManager.decodeQRCode(bitmap)
                 }
 
-                binding.progressBar.visibility = View.GONE
-
                 if (payloadString.isNullOrBlank()) {
+                    binding.progressBar.visibility = View.GONE
                     binding.tvVerifyStatus.setTextColor(Color.RED)
                     binding.tvVerifyStatus.text =
                         "No ReceiptShield QR code found in the image."
@@ -1148,24 +1148,121 @@ class MainActivity : AppCompatActivity() {
                 val payload = ReceiptPayload.deserialize(payloadString)
 
                 if (payload == null) {
+                    binding.progressBar.visibility = View.GONE
                     binding.tvVerifyStatus.setTextColor(Color.RED)
                     binding.tvVerifyStatus.text =
-                        "Invalid QR format. This is not a ReceiptShield stamp."
+                        "INVALID QR FORMAT\n\nThis is not a valid ReceiptShield stamp."
                     return@launch
                 }
 
-                binding.tvVerifyStatus.setTextColor(
-                    Color.parseColor("#0F9D58")
-                )
+                // Older payloads do not contain RSA signatures.
+                if (
+                    payload.publicKey.isBlank() ||
+                    payload.digitalSignature.isBlank()
+                ) {
+                    binding.progressBar.visibility = View.GONE
+                    binding.tvVerifyStatus.setTextColor(
+                        Color.rgb(230, 145, 0)
+                    )
 
-                binding.tvVerifyStatus.text = """
-                    VALID STAMP DETECTED
+                    binding.tvVerifyStatus.text = """
+                        LEGACY STAMP — NOT AUTHENTICATED
 
-                    Issuer ID: ${payload.issuerId}
-                    Issued: ${dateFormatter.format(Date(payload.timestamp))}
+                        Issuer ID: ${payload.issuerId}
+                        Issued: ${dateFormatter.format(Date(payload.timestamp))}
 
-                    Note: Camera scans verify the Issuer and Date. To verify file integrity, use the "Pick File to Verify" button.
-                """.trimIndent()
+                        This QR code does not contain a digital signature.
+                        Its issuer identity cannot be authenticated.
+
+                        Use the file verification feature for additional checks.
+                    """.trimIndent()
+
+                    return@launch
+                }
+
+                // Verify the RSA digital signature.
+                val signatureValid = withContext(Dispatchers.Default) {
+                    securityManager.verifyPayloadSignature(payload)
+                }
+
+                if (!signatureValid) {
+                    binding.progressBar.visibility = View.GONE
+                    binding.tvVerifyStatus.setTextColor(Color.RED)
+
+                    binding.tvVerifyStatus.text = """
+                        INVALID SIGNATURE
+
+                        Issuer ID: ${payload.issuerId}
+                        Issued: ${dateFormatter.format(Date(payload.timestamp))}
+
+                        The digital signature could not be verified.
+
+                        This QR payload must not be treated as authentic.
+                    """.trimIndent()
+
+                    return@launch
+                }
+
+                // A valid signature proves possession of the corresponding
+                // private key. The registry determines whether that key
+                // belongs to an issuer trusted on this device.
+                val trusted = withContext(Dispatchers.IO) {
+                    TrustedIssuerRegistry(applicationContext)
+                        .isTrusted(payload)
+                }
+
+                binding.progressBar.visibility = View.GONE
+
+                if (trusted) {
+
+                    binding.tvVerifyStatus.setTextColor(
+                        Color.parseColor("#0F9D58")
+                    )
+
+                    binding.tvVerifyStatus.text = """
+                        TRUSTED ISSUER — SIGNATURE VALID
+
+                        Issuer ID: ${payload.issuerId}
+                        Issued: ${dateFormatter.format(Date(payload.timestamp))}
+
+                        Digital signature: VALID
+                        Issuer identity: TRUSTED
+
+                        The signing key matches an issuer registered
+                        in this device's trusted issuer registry.
+
+                        Important: This camera scan does not verify
+                        whether the original document has been modified.
+                        Use Pick File to Verify for document checks.
+                    """.trimIndent()
+
+                } else {
+
+                    binding.tvVerifyStatus.setTextColor(
+                        Color.rgb(230, 145, 0)
+                    )
+
+                    binding.tvVerifyStatus.text = """
+                        SIGNATURE VALID — ISSUER UNCONFIRMED
+
+                        Issuer ID: ${payload.issuerId}
+                        Issued: ${dateFormatter.format(Date(payload.timestamp))}
+
+                        Digital signature: VALID
+                        Issuer identity: NOT TRUSTED ON THIS DEVICE
+
+                        The QR signature is mathematically valid, but
+                        this issuer's public key is not registered
+                        in the trusted issuer registry.
+
+                        Important: A valid signature alone does not
+                        establish the real-world identity of the issuer.
+                        Use an independently verified fingerprint before
+                        registering a new trusted issuer.
+
+                        Camera scanning does not verify document integrity.
+                    """.trimIndent()
+                }
 
             } catch (e: Exception) {
 
@@ -1173,7 +1270,7 @@ class MainActivity : AppCompatActivity() {
                 binding.tvVerifyStatus.setTextColor(Color.RED)
 
                 binding.tvVerifyStatus.text =
-                    "Camera scan failed: ${e.message}"
+                    "Camera verification failed:\n${e.message}"
 
             } finally {
                 bitmap.recycle()
