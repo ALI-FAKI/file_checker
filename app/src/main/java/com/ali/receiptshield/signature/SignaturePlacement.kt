@@ -1,5 +1,6 @@
-
 package com.ali.receiptshield.signature
+
+import com.ali.receiptshield.crypto.PlacementMetaV4
 
 /**
  * Stores signature placement relative to a document page.
@@ -30,6 +31,22 @@ data class SignaturePlacement(
             x = safeX,
             y = safeY,
             width = safeWidth
+        )
+    }
+
+    fun toPlacementMetaV4(aspectRatio: Float = 0.35f): PlacementMetaV4 {
+        val norm = normalized()
+        val safeAspect = if (aspectRatio.isFinite() && aspectRatio > 0f) {
+            aspectRatio.toDouble()
+        } else {
+            0.35
+        }
+        return PlacementMetaV4(
+            pageIndex = norm.pageIndex,
+            xRatio = norm.x.toDouble(),
+            yRatio = norm.y.toDouble(),
+            widthRatio = norm.width.toDouble(),
+            heightRatio = (norm.width.toDouble() * safeAspect).coerceIn(0.01, 1.0)
         )
     }
 
