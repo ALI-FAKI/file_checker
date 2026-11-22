@@ -23,6 +23,10 @@
         </provider>
 
         <activity
+            android:name=".IssuerManagementActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".signature.SignatureEditorActivity"
             android:exported="false" />
 
