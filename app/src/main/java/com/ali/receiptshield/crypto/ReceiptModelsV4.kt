@@ -5,8 +5,16 @@ import org.json.JSONObject
 
 const val RECEIPT_VERSION_V4 = "RS_V4"
 
-enum class DocumentFormatV4 {
-    PDF, DOCX, IMAGE, PNG, JPG, JPEG, WEBP, BMP, UNKNOWN;
+enum class DocumentFormatV4(val wireName: String) {
+    PDF("PDF"),
+    DOCX("DOCX"),
+    IMAGE("IMAGE"),
+    PNG("PNG"),
+    JPG("JPG"),
+    JPEG("JPEG"),
+    WEBP("WEBP"),
+    BMP("BMP"),
+    UNKNOWN("UNKNOWN");
 
     companion object {
         fun fromFileNameOrMime(fileName: String, mimeType: String?): DocumentFormatV4 {
@@ -15,26 +23,27 @@ enum class DocumentFormatV4 {
             return when {
                 name.endsWith(".pdf") || mime.contains("pdf") -> PDF
                 name.endsWith(".docx") || mime.contains("wordprocessingml") -> DOCX
-                name.endsWith(".png") -> PNG
+                name.endsWith(".png") || mime.contains("png") -> PNG
                 name.endsWith(".jpg") -> JPG
-                name.endsWith(".jpeg") -> JPEG
-                name.endsWith(".webp") -> WEBP
-                name.endsWith(".bmp") -> BMP
+                name.endsWith(".jpeg") || mime.contains("jpeg") -> JPEG
+                name.endsWith(".webp") || mime.contains("webp") -> WEBP
+                name.endsWith(".bmp") || mime.contains("bmp") -> BMP
                 else -> UNKNOWN
             }
         }
     }
 }
 
-enum class StampModeV4 { EMBEDDED, DETACHED, QR_ONLY, QR_AND_SIGNATURE, SIGNATURE_ONLY }
+enum class StampModeV4 {
+    EMBEDDED, DETACHED, QR_ONLY, QR_AND_SIGNATURE, SIGNATURE_ONLY
+}
 
 enum class InjectedArtifactType {
-    METADATA_STREAM, SIGNATURE_IMAGE, QR_IMAGE, RELATIONSHIP, CONTENT_TYPE,
-    MANIFEST, QR, SIGNATURE, UNKNOWN
+    METADATA_STREAM, SIGNATURE_IMAGE, QR_IMAGE, RELATIONSHIP, CONTENT_TYPE, MANIFEST, QR, SIGNATURE, UNKNOWN
 }
 
 enum class VerificationStatus {
-    VERIFIED, AUTHENTIC, RECOMPRESSED, TAMPERED, DOCUMENT_TAMPERED,
+    VERIFIED, AUTHENTIC, RECOMPRESSED, TAMPERED, DOCUMENT_TAMPERED, 
     UNSUPPORTED_OR_CORRUPTED_FILE, INTEGRITY_MANIFEST_MISSING_OR_INVALID,
     SIGNATURE_ONLY_NO_CRYPTO_PROOF, INVALID_DIGITAL_SIGNATURE,
     QR_DOES_NOT_BELONG_TO_DOCUMENT, SIGNATURE_VALID_ISSUER_UNTRUSTED
@@ -72,7 +81,6 @@ data class IntegrityManifestV4(
     val signatureMeta: SignatureMetaV4? = null,
     val injectedArtifacts: List<InjectedArtifactV4> = emptyList()
 ) {
-    // ADDED: Serialize manifest to canonical bytes for hashing/embedding
     fun toCanonicalBytes(): ByteArray = toJsonString().toByteArray(Charsets.UTF_8)
 
     fun toJsonString(): String {
@@ -122,7 +130,6 @@ data class IntegrityManifestV4(
     }
 
     companion object {
-        // ADDED: Deserialize manifest from embedded JSON
         fun fromJsonString(raw: String): IntegrityManifestV4? {
             return try {
                 val json = JSONObject(raw)
@@ -169,7 +176,7 @@ data class IntegrityManifestV4(
                 }
 
                 IntegrityManifestV4(
-                    version = json.getString("version"),
+                    version = json.optString("version", RECEIPT_VERSION_V4),
                     receiptId = json.getString("receiptId"),
                     createdAtMillis = json.getLong("createdAtMillis"),
                     documentFormat = DocumentFormatV4.valueOf(json.getString("documentFormat")),
@@ -198,13 +205,31 @@ data class ReceiptPayloadV4(
     val documentFormat: DocumentFormatV4,
     val stampMode: StampModeV4,
     val integrityManifest: IntegrityManifestV4,
-    // ADDED: These mirror manifest fields, extracted from the QR side, for binding checks
     val originalDocSha256: String,
     val manifestSha256: String,
     val qrPlacement: PlacementMetaV4? = null,
     val signatureMeta: SignatureMetaV4? = null,
     val digitalSignatureBase64: String = ""
 ) {
+    fun toCanonicalSigningBytes(): ByteArray {
+        val canonical = buildString {
+            append(version).append('\n')
+            append(receiptId).append('\n')
+            append(issuerId).append('\n')
+            append(timestampMillis).append('\n')
+            append(nonce).append('\n')
+            append(documentFormat.name).append('\n')
+            append(stampMode.name).append('\n')
+            append(originalDocSha256).append('\n')
+            append(manifestSha256).append('\n')
+            append(qrPlacement?.let {
+                "${it.pageIndex},${it.xRatio},${it.yRatio},${it.widthRatio},${it.heightRatio}"
+            } ?: "none").append('\n')
+            append(signatureMeta?.signatureDigestSha256 ?: "none")
+        }
+        return canonical.toByteArray(Charsets.UTF_8)
+    }
+
     fun toQrJsonString(): String {
         return JSONObject().apply {
             put("version", version)
@@ -280,7 +305,7 @@ data class ReceiptPayloadV4(
                 } else null
 
                 ReceiptPayloadV4(
-                    version = json.getString("version"),
+                    version = json.optString("version", RECEIPT_VERSION_V4),
                     receiptId = json.getString("receiptId"),
                     issuerId = json.getString("issuerId"),
                     publicKeyBase64 = json.optString("publicKeyBase64", ""),
