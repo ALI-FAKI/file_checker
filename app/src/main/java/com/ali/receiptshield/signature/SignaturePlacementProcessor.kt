@@ -1,8 +1,9 @@
-
 package com.ali.receiptshield.signature
 
 import android.graphics.Bitmap
 import android.graphics.RectF
+import com.ali.receiptshield.crypto.PlacementMetaV4
+import kotlin.math.max
 
 /**
  * Converts signature placement into document coordinates.
@@ -103,5 +104,25 @@ object SignaturePlacementProcessor {
             bounds.top >= 0f &&
             bounds.right <= pageWidth &&
             bounds.bottom <= pageHeight
+    }
+
+    /**
+     * Converts computed signature bounds into normalized RS_V4 placement metadata.
+     */
+    fun toPlacementMetaV4(
+        bounds: DocumentSignatureBounds,
+        pageWidth: Float,
+        pageHeight: Float
+    ): PlacementMetaV4 {
+        require(pageWidth > 0f) { "Page width must be greater than zero" }
+        require(pageHeight > 0f) { "Page height must be greater than zero" }
+
+        return PlacementMetaV4(
+            pageIndex = bounds.pageIndex.coerceAtLeast(0),
+            xRatio = (bounds.left / pageWidth).toDouble().coerceIn(0.0, 1.0),
+            yRatio = (bounds.top / pageHeight).toDouble().coerceIn(0.0, 1.0),
+            widthRatio = (bounds.width / pageWidth).toDouble().coerceIn(0.0, 1.0),
+            heightRatio = (bounds.height / pageHeight).toDouble().coerceIn(0.0, 1.0)
+        )
     }
 }
