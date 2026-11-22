@@ -16,6 +16,7 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
+import com.ali.receiptshield.crypto.RECEIPT_VERSION_V4
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -64,8 +65,8 @@ class StampFileHelper(private val context: Context) {
     }
 
     /**
-     * Creates a stamped PDF containing a verification page with the QR code,
-     * Issuer ID, timestamp, and file SHA-256 hash.
+     * Creates a stamped PDF containing a verification page with the RS_V4 QR code,
+     * Issuer ID, timestamp, and original file SHA-256 hash.
      */
     fun createStampedPdfWithQr(
         qrBitmap: Bitmap,
@@ -107,15 +108,21 @@ class StampFileHelper(private val context: Context) {
             textSize = 12f
         }
 
-        canvas.drawText("ReceiptShield Document Verification Stamp", 48f, 64f, titlePaint)
-        canvas.drawText("Offline Cryptographic Verification Record", 48f, 84f, subtitlePaint)
+        canvas.drawText("ReceiptShield $RECEIPT_VERSION_V4 Verification Stamp", 48f, 64f, titlePaint)
+        canvas.drawText("Offline Cryptographic Integrity Record ($RECEIPT_VERSION_V4)", 48f, 84f, subtitlePaint)
 
         // Draw QR code centered
         val qrSize = 240
         val qrLeft = (pageWidth - qrSize) / 2
         val qrTop = 120
         val scaledQr = Bitmap.createScaledBitmap(qrBitmap, qrSize, qrSize, false)
-        canvas.drawBitmap(scaledQr, qrLeft.toFloat(), qrTop.toFloat(), null)
+        try {
+            canvas.drawBitmap(scaledQr, qrLeft.toFloat(), qrTop.toFloat(), null)
+        } finally {
+            if (scaledQr !== qrBitmap && !scaledQr.isRecycled) {
+                scaledQr.recycle()
+            }
+        }
 
         var y = (qrTop + qrSize + 44).toFloat()
         val lineGap = 24f
@@ -136,7 +143,7 @@ class StampFileHelper(private val context: Context) {
         canvas.drawText(fileHash.take(36) + "...", 150f, y, valuePaint)
         y += lineGap * 1.5f
 
-        canvas.drawText("QR Payload:", 48f, y, labelPaint)
+        canvas.drawText("QR Payload ($RECEIPT_VERSION_V4):", 48f, y, labelPaint)
         y += 18f
         val chunks = payloadSerialized.chunked(68)
         for (chunk in chunks) {
@@ -145,6 +152,7 @@ class StampFileHelper(private val context: Context) {
         }
 
         pdfDocument.finishPage(page)
+        outFile.parentFile?.mkdirs()
         FileOutputStream(outFile).use { out ->
             pdfDocument.writeTo(out)
         }
@@ -153,8 +161,7 @@ class StampFileHelper(private val context: Context) {
     }
 
     /**
-     * For non-PDF documents (e.g. DOCX, TXT, XLSX), writes a companion QR image and
-     * stamp text file so the QR code is generated for the document rather than images.
+     * Writes a companion QR image and stamp summary file for RS_V4 workflows.
      */
     fun createDocumentQrArtifacts(
         qrBitmap: Bitmap,
@@ -176,7 +183,7 @@ class StampFileHelper(private val context: Context) {
 
         val infoFile = File(dir, "${cleanBase}_${stampSuffix}_Stamp.txt")
         val content = buildString {
-            appendLine("ReceiptShield Document Stamp")
+            appendLine("ReceiptShield $RECEIPT_VERSION_V4 Stamp")
             appendLine("Document: $originalFileName")
             appendLine("Issuer: $issuerId")
             appendLine("Date: ${formatter.format(Date(timestamp))}")
@@ -212,7 +219,7 @@ class StampFileHelper(private val context: Context) {
         return Intent(Intent.ACTION_SEND).apply {
             type = mimeType.ifBlank { "*/*" }
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_TEXT, "ReceiptShield File: ${file.name}")
+            putExtra(Intent.EXTRA_TEXT, "ReceiptShield ($RECEIPT_VERSION_V4) File: ${file.name}")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
     }
