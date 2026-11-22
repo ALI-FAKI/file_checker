@@ -1,4 +1,3 @@
-
 package com.ali.receiptshield.files
 
 import android.graphics.Bitmap
@@ -6,12 +5,99 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
+import com.ali.receiptshield.crypto.DocumentFormatV4
+import com.ali.receiptshield.crypto.InjectedArtifactType
+import com.ali.receiptshield.crypto.InjectedArtifactV4
+import com.ali.receiptshield.crypto.IntegrityManifestV4
+import com.ali.receiptshield.crypto.PlacementMetaV4
+import com.ali.receiptshield.crypto.ReceiptSecurityManager
+import com.ali.receiptshield.crypto.RsV4IntegrityManager
+import com.ali.receiptshield.crypto.SignatureMetaV4
+import com.ali.receiptshield.crypto.StampModeV4
 import com.ali.receiptshield.signature.DocumentSignature
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 
 object ImageSignatureProcessor {
+
+    @Throws(IOException::class)
+    fun stampImageWithSignatureV4(
+        originalImage: File,
+        signature: DocumentSignature,
+        receiptId: String,
+        originalDocSha256: String,
+        issuerId: String,
+        outputFile: File,
+        securityManager: ReceiptSecurityManager = ReceiptSecurityManager(),
+        integrityManager: RsV4IntegrityManager = RsV4IntegrityManager(securityManager)
+    ): IntegrityManifestV4 {
+        if (!originalImage.exists() || originalImage.length() <= 0L) {
+            throw IOException("Original image is missing or empty.")
+        }
+        if (!signature.isSignatureFileAvailable()) {
+            throw IOException("Signature image is missing or empty.")
+        }
+
+        val tempStampedFile = File.createTempFile(
+            "rs_v4_img_sig_",
+            ".png",
+            outputFile.parentFile ?: originalImage.parentFile
+        )
+
+        try {
+            stampImageWithSignature(
+                originalImage = originalImage,
+                signature = signature,
+                outputFile = tempStampedFile
+            )
+
+            val stampedBytes = tempStampedFile.readBytes()
+            val stampedDigest = securityManager.sha256Bytes(stampedBytes)
+            val normPlacement = signature.placement.normalized()
+            val sigDigest = securityManager.sha256Bytes(signature.signatureFile.readBytes())
+
+            val detectedFormat = DocumentFormatV4.fromFileNameOrMime(originalImage.name, null)
+                ?: DocumentFormatV4.PNG
+
+            val signatureMeta = SignatureMetaV4(
+                placement = PlacementMetaV4(
+                    pageIndex = normPlacement.pageIndex,
+                    xRatio = normPlacement.x.toDouble(),
+                    yRatio = normPlacement.y.toDouble(),
+                    widthRatio = normPlacement.width.toDouble(),
+                    heightRatio = normPlacement.height.toDouble()
+                ),
+                signatureDigestSha256 = sigDigest
+            )
+
+            val manifest = integrityManager.buildManifest(
+                receiptId = receiptId,
+                documentFormat = detectedFormat,
+                stampMode = StampModeV4.SIGNATURE_ONLY,
+                originalDocSha256 = originalDocSha256,
+                issuerId = issuerId,
+                qrPlacement = null,
+                signatureMeta = signatureMeta,
+                injectedArtifacts = listOf(
+                    InjectedArtifactV4(
+                        type = InjectedArtifactType.METADATA_STREAM,
+                        identifier = "image_signature_stamped_png",
+                        digestSha256 = stampedDigest
+                    )
+                )
+            )
+
+            val finalBytes = integrityManager.embedManifestInImageBytes(stampedBytes, manifest)
+            outputFile.parentFile?.mkdirs()
+            outputFile.writeBytes(finalBytes)
+            return manifest
+        } finally {
+            if (tempStampedFile.exists()) {
+                tempStampedFile.delete()
+            }
+        }
+    }
 
     /**
      * Adds a signature to an image using normalized coordinates.
