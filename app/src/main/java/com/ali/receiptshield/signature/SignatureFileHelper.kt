@@ -1,4 +1,3 @@
-
 package com.ali.receiptshield.signature
 
 import android.content.Context
@@ -52,13 +51,13 @@ object SignatureFileHelper {
             fileName ?: "${FILE_PREFIX}${System.currentTimeMillis()}"
         )
 
-        val finalName = if (safeName.endsWith(FILE_EXTENSION)) {
-            safeName
+        val finalName = if (safeName.endsWith(FILE_EXTENSION, ignoreCase = true)) {
+            safeName.dropLast(FILE_EXTENSION.length) + FILE_EXTENSION
         } else {
             "$safeName$FILE_EXTENSION"
         }
 
-        val outputFile = File(directory, finalName)
+        val outputFile = resolveInsideDirectory(directory, finalName)
 
         FileOutputStream(outputFile).use { output ->
             val success = bitmap.compress(
@@ -98,7 +97,7 @@ object SignatureFileHelper {
 
         val safeName = sanitizeFileName(fileName)
 
-        val file = File(
+        val file = resolveInsideDirectory(
             getSignatureDirectory(context),
             safeName
         )
@@ -143,7 +142,7 @@ object SignatureFileHelper {
 
         val safeName = sanitizeFileName(fileName)
 
-        val file = File(
+        val file = resolveInsideDirectory(
             getSignatureDirectory(context),
             safeName
         )
@@ -151,17 +150,34 @@ object SignatureFileHelper {
         return deleteSignature(file)
     }
 
+    private fun resolveInsideDirectory(
+        directory: File,
+        fileName: String
+    ): File {
+        val target = File(directory, fileName)
+        val canonicalDir = directory.canonicalFile
+        val canonicalTarget = target.canonicalFile
+
+        if (canonicalTarget.parentFile != canonicalDir) {
+            throw IOException("Invalid signature file path")
+        }
+
+        return target
+    }
+
     /**
      * Removes unsafe path characters from a file name.
      */
     private fun sanitizeFileName(name: String): String {
-        return name
+        val cleaned = name
             .substringAfterLast('/')
             .substringAfterLast('\\')
             .replace(Regex("[^a-zA-Z0-9._-]"), "_")
+            .trim('.')
             .take(100)
-            .ifBlank {
-                "${FILE_PREFIX}${System.currentTimeMillis()}"
-            }
+
+        return cleaned.ifBlank {
+            "${FILE_PREFIX}${System.currentTimeMillis()}"
+        }
     }
 }
