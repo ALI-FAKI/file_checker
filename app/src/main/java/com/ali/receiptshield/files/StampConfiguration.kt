@@ -1,6 +1,7 @@
-
 package com.ali.receiptshield.files
 
+import com.ali.receiptshield.crypto.PlacementMetaV4
+import com.ali.receiptshield.crypto.SignatureMetaV4
 import com.ali.receiptshield.qr.QrPlacement
 import com.ali.receiptshield.signature.DocumentSignature
 
@@ -50,6 +51,33 @@ data class StampConfiguration(
         return copy(
             qrPlacement = qrPlacement.normalized(),
             signature = signature?.normalized()
+        )
+    }
+
+    fun toQrPlacementMetaV4(): PlacementMetaV4? {
+        if (!mode.includesQr) return null
+        val norm = qrPlacement.normalized()
+        return PlacementMetaV4(
+            pageIndex = norm.pageIndex,
+            xRatio = norm.x.toDouble(),
+            yRatio = norm.y.toDouble(),
+            widthRatio = norm.width.toDouble(),
+            heightRatio = norm.width.toDouble()
+        )
+    }
+
+    fun toSignatureMetaV4(signatureDigestSha256: String): SignatureMetaV4? {
+        if (!mode.includesSignature) return null
+        val sig = signature?.normalized() ?: return null
+        return SignatureMetaV4(
+            placement = PlacementMetaV4(
+                pageIndex = sig.placement.pageIndex,
+                xRatio = sig.placement.x.toDouble(),
+                yRatio = sig.placement.y.toDouble(),
+                widthRatio = sig.placement.width.toDouble(),
+                heightRatio = sig.placement.height.toDouble()
+            ),
+            signatureDigestSha256 = signatureDigestSha256.lowercase().trim()
         )
     }
 }
