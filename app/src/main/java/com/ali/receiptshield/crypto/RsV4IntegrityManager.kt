@@ -138,7 +138,11 @@ class RsV4IntegrityManager(
         val cleanImageBytes = stampedImageBytes.copyOfRange(0, manifestStart)
 
         return try {
+            // FIX #4: Unwrap nullable manifest with ?: return null
+            // Otherwise the compiler sees Pair<ByteArray, IntegrityManifestV4?>
+            // which doesn't match the declared return type Pair<ByteArray, IntegrityManifestV4>?
             val manifest = IntegrityManifestV4.fromJsonString(String(manifestBytes, Charsets.UTF_8))
+                ?: return null
             Pair(cleanImageBytes, manifest)
         } catch (_: Exception) {
             null
@@ -270,6 +274,11 @@ class RsV4IntegrityManager(
                     InjectedArtifactType.RELATIONSHIP,
                     InjectedArtifactType.CONTENT_TYPE,
                     InjectedArtifactType.METADATA_STREAM -> {
+                        injectedNames.add(artifact.identifier)
+                    }
+                    // FIX #5: Handle remaining enum values so the when is exhaustive
+                    // (QR, SIGNATURE, UNKNOWN and any future types)
+                    else -> {
                         injectedNames.add(artifact.identifier)
                     }
                 }
