@@ -1,5 +1,6 @@
 package com.ali.receiptshield.crypto
 
+import org.json.JSONArray
 import org.json.JSONObject
 
 const val RECEIPT_VERSION_V4 = "RS_V4"
@@ -25,38 +26,18 @@ enum class DocumentFormatV4 {
     }
 }
 
-enum class StampModeV4 {
-    EMBEDDED, 
-    DETACHED, 
-    QR_ONLY, 
-    QR_AND_SIGNATURE,
-    SIGNATURE_ONLY
-}
+enum class StampModeV4 { EMBEDDED, DETACHED, QR_ONLY, QR_AND_SIGNATURE, SIGNATURE_ONLY }
 
 enum class InjectedArtifactType {
-    METADATA_STREAM, 
-    SIGNATURE_IMAGE, 
-    QR_IMAGE, 
-    RELATIONSHIP, 
-    CONTENT_TYPE, 
-    MANIFEST, 
-    QR, 
-    SIGNATURE, 
-    UNKNOWN
+    METADATA_STREAM, SIGNATURE_IMAGE, QR_IMAGE, RELATIONSHIP, CONTENT_TYPE,
+    MANIFEST, QR, SIGNATURE, UNKNOWN
 }
 
 enum class VerificationStatus {
-    VERIFIED,
-    AUTHENTIC,
-    RECOMPRESSED,
-    TAMPERED,
-    DOCUMENT_TAMPERED,
-    UNSUPPORTED_OR_CORRUPTED_FILE,
-    INTEGRITY_MANIFEST_MISSING_OR_INVALID,
-    SIGNATURE_ONLY_NO_CRYPTO_PROOF,
-    INVALID_DIGITAL_SIGNATURE,
-    QR_DOES_NOT_BELONG_TO_DOCUMENT,
-    SIGNATURE_VALID_ISSUER_UNTRUSTED
+    VERIFIED, AUTHENTIC, RECOMPRESSED, TAMPERED, DOCUMENT_TAMPERED,
+    UNSUPPORTED_OR_CORRUPTED_FILE, INTEGRITY_MANIFEST_MISSING_OR_INVALID,
+    SIGNATURE_ONLY_NO_CRYPTO_PROOF, INVALID_DIGITAL_SIGNATURE,
+    QR_DOES_NOT_BELONG_TO_DOCUMENT, SIGNATURE_VALID_ISSUER_UNTRUSTED
 }
 
 data class PlacementMetaV4(
@@ -90,7 +71,122 @@ data class IntegrityManifestV4(
     val qrPlacement: PlacementMetaV4? = null,
     val signatureMeta: SignatureMetaV4? = null,
     val injectedArtifacts: List<InjectedArtifactV4> = emptyList()
-)
+) {
+    // ADDED: Serialize manifest to canonical bytes for hashing/embedding
+    fun toCanonicalBytes(): ByteArray = toJsonString().toByteArray(Charsets.UTF_8)
+
+    fun toJsonString(): String {
+        return JSONObject().apply {
+            put("version", version)
+            put("receiptId", receiptId)
+            put("createdAtMillis", createdAtMillis)
+            put("documentFormat", documentFormat.name)
+            put("stampMode", stampMode.name)
+            put("originalDocSha256", originalDocSha256)
+            put("issuerId", issuerId)
+            put("originalPerceptualHash", originalPerceptualHash)
+
+            qrPlacement?.let {
+                put("qrPlacement", JSONObject().apply {
+                    put("pageIndex", it.pageIndex)
+                    put("xRatio", it.xRatio)
+                    put("yRatio", it.yRatio)
+                    put("widthRatio", it.widthRatio)
+                    put("heightRatio", it.heightRatio)
+                })
+            }
+
+            signatureMeta?.let {
+                put("signatureMeta", JSONObject().apply {
+                    put("signatureDigestSha256", it.signatureDigestSha256)
+                    put("placement", JSONObject().apply {
+                        put("pageIndex", it.placement.pageIndex)
+                        put("xRatio", it.placement.xRatio)
+                        put("yRatio", it.placement.yRatio)
+                        put("widthRatio", it.placement.widthRatio)
+                        put("heightRatio", it.placement.heightRatio)
+                    })
+                })
+            }
+
+            val artifactsArray = JSONArray()
+            injectedArtifacts.forEach { a ->
+                artifactsArray.put(JSONObject().apply {
+                    put("type", a.type.name)
+                    put("identifier", a.identifier)
+                    put("digestSha256", a.digestSha256)
+                })
+            }
+            put("injectedArtifacts", artifactsArray)
+        }.toString()
+    }
+
+    companion object {
+        // ADDED: Deserialize manifest from embedded JSON
+        fun fromJsonString(raw: String): IntegrityManifestV4? {
+            return try {
+                val json = JSONObject(raw)
+
+                val qrPlacement = if (json.has("qrPlacement")) {
+                    val p = json.getJSONObject("qrPlacement")
+                    PlacementMetaV4(
+                        pageIndex = p.getInt("pageIndex"),
+                        xRatio = p.getDouble("xRatio"),
+                        yRatio = p.getDouble("yRatio"),
+                        widthRatio = p.getDouble("widthRatio"),
+                        heightRatio = p.getDouble("heightRatio")
+                    )
+                } else null
+
+                val signatureMeta = if (json.has("signatureMeta")) {
+                    val s = json.getJSONObject("signatureMeta")
+                    val sp = s.getJSONObject("placement")
+                    SignatureMetaV4(
+                        signatureDigestSha256 = s.getString("signatureDigestSha256"),
+                        placement = PlacementMetaV4(
+                            pageIndex = sp.getInt("pageIndex"),
+                            xRatio = sp.getDouble("xRatio"),
+                            yRatio = sp.getDouble("yRatio"),
+                            widthRatio = sp.getDouble("widthRatio"),
+                            heightRatio = sp.getDouble("heightRatio")
+                        )
+                    )
+                } else null
+
+                val artifacts = mutableListOf<InjectedArtifactV4>()
+                if (json.has("injectedArtifacts")) {
+                    val arr = json.getJSONArray("injectedArtifacts")
+                    for (i in 0 until arr.length()) {
+                        val a = arr.getJSONObject(i)
+                        artifacts.add(
+                            InjectedArtifactV4(
+                                type = InjectedArtifactType.valueOf(a.getString("type")),
+                                identifier = a.getString("identifier"),
+                                digestSha256 = a.getString("digestSha256")
+                            )
+                        )
+                    }
+                }
+
+                IntegrityManifestV4(
+                    version = json.getString("version"),
+                    receiptId = json.getString("receiptId"),
+                    createdAtMillis = json.getLong("createdAtMillis"),
+                    documentFormat = DocumentFormatV4.valueOf(json.getString("documentFormat")),
+                    stampMode = StampModeV4.valueOf(json.getString("stampMode")),
+                    originalDocSha256 = json.getString("originalDocSha256"),
+                    issuerId = json.getString("issuerId"),
+                    originalPerceptualHash = json.optString("originalPerceptualHash", ""),
+                    qrPlacement = qrPlacement,
+                    signatureMeta = signatureMeta,
+                    injectedArtifacts = artifacts
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+}
 
 data class ReceiptPayloadV4(
     val version: String = RECEIPT_VERSION_V4,
@@ -102,6 +198,11 @@ data class ReceiptPayloadV4(
     val documentFormat: DocumentFormatV4,
     val stampMode: StampModeV4,
     val integrityManifest: IntegrityManifestV4,
+    // ADDED: These mirror manifest fields, extracted from the QR side, for binding checks
+    val originalDocSha256: String,
+    val manifestSha256: String,
+    val qrPlacement: PlacementMetaV4? = null,
+    val signatureMeta: SignatureMetaV4? = null,
     val digitalSignatureBase64: String = ""
 ) {
     fun toQrJsonString(): String {
@@ -114,16 +215,89 @@ data class ReceiptPayloadV4(
             put("nonce", nonce)
             put("documentFormat", documentFormat.name)
             put("stampMode", stampMode.name)
+            put("originalDocSha256", originalDocSha256)
+            put("manifestSha256", manifestSha256)
             put("digitalSignatureBase64", digitalSignatureBase64)
-            put("integrityManifest", JSONObject().apply {
-                put("receiptId", integrityManifest.receiptId)
-                put("createdAtMillis", integrityManifest.createdAtMillis)
-                put("documentFormat", integrityManifest.documentFormat.name)
-                put("stampMode", integrityManifest.stampMode.name)
-                put("originalDocSha256", integrityManifest.originalDocSha256)
-                put("issuerId", integrityManifest.issuerId)
-                put("originalPerceptualHash", integrityManifest.originalPerceptualHash)
-            })
+            put("integrityManifest", JSONObject(integrityManifest.toJsonString()))
+
+            qrPlacement?.let {
+                put("qrPlacement", JSONObject().apply {
+                    put("pageIndex", it.pageIndex)
+                    put("xRatio", it.xRatio)
+                    put("yRatio", it.yRatio)
+                    put("widthRatio", it.widthRatio)
+                    put("heightRatio", it.heightRatio)
+                })
+            }
+
+            signatureMeta?.let {
+                put("signatureMeta", JSONObject().apply {
+                    put("signatureDigestSha256", it.signatureDigestSha256)
+                    put("placement", JSONObject().apply {
+                        put("pageIndex", it.placement.pageIndex)
+                        put("xRatio", it.placement.xRatio)
+                        put("yRatio", it.placement.yRatio)
+                        put("widthRatio", it.placement.widthRatio)
+                        put("heightRatio", it.placement.heightRatio)
+                    })
+                })
+            }
         }.toString()
+    }
+
+    companion object {
+        fun fromQrJsonString(raw: String): ReceiptPayloadV4? {
+            return try {
+                val json = JSONObject(raw)
+                val manifest = IntegrityManifestV4.fromJsonString(
+                    json.getJSONObject("integrityManifest").toString()
+                ) ?: return null
+
+                val qrPlacement = if (json.has("qrPlacement")) {
+                    val p = json.getJSONObject("qrPlacement")
+                    PlacementMetaV4(
+                        pageIndex = p.getInt("pageIndex"),
+                        xRatio = p.getDouble("xRatio"),
+                        yRatio = p.getDouble("yRatio"),
+                        widthRatio = p.getDouble("widthRatio"),
+                        heightRatio = p.getDouble("heightRatio")
+                    )
+                } else null
+
+                val signatureMeta = if (json.has("signatureMeta")) {
+                    val s = json.getJSONObject("signatureMeta")
+                    val sp = s.getJSONObject("placement")
+                    SignatureMetaV4(
+                        signatureDigestSha256 = s.getString("signatureDigestSha256"),
+                        placement = PlacementMetaV4(
+                            pageIndex = sp.getInt("pageIndex"),
+                            xRatio = sp.getDouble("xRatio"),
+                            yRatio = sp.getDouble("yRatio"),
+                            widthRatio = sp.getDouble("widthRatio"),
+                            heightRatio = sp.getDouble("heightRatio")
+                        )
+                    )
+                } else null
+
+                ReceiptPayloadV4(
+                    version = json.getString("version"),
+                    receiptId = json.getString("receiptId"),
+                    issuerId = json.getString("issuerId"),
+                    publicKeyBase64 = json.optString("publicKeyBase64", ""),
+                    timestampMillis = json.getLong("timestampMillis"),
+                    nonce = json.optString("nonce", ""),
+                    documentFormat = DocumentFormatV4.valueOf(json.getString("documentFormat")),
+                    stampMode = StampModeV4.valueOf(json.getString("stampMode")),
+                    integrityManifest = manifest,
+                    originalDocSha256 = json.getString("originalDocSha256"),
+                    manifestSha256 = json.getString("manifestSha256"),
+                    qrPlacement = qrPlacement,
+                    signatureMeta = signatureMeta,
+                    digitalSignatureBase64 = json.optString("digitalSignatureBase64", "")
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }
     }
 }
