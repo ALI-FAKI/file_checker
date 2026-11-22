@@ -1,8 +1,8 @@
-
 package com.ali.receiptshield.signature
 
 import android.graphics.BitmapFactory
 import java.io.File
+import java.security.MessageDigest
 
 object SignatureValidation {
 
@@ -75,6 +75,34 @@ object SignatureValidation {
     }
 
     /**
+     * Performs standard signature validation plus RS_V4 metadata checks
+     * (finite height ratio and readable SHA-256 signature image digest).
+     */
+    fun validateForV4(
+        signature: DocumentSignature,
+        totalPages: Int
+    ): ValidationResult {
+        val base = validate(signature, totalPages)
+        val errors = base.errors.toMutableList()
+
+        if (!signature.placement.height.isFinite()) {
+            errors.add("Signature height ratio is invalid.")
+        }
+
+        if (isValidImage(signature.signatureFile)) {
+            val digest = computeSha256Hex(signature.signatureFile)
+            if (digest.isNullOrBlank()) {
+                errors.add("Unable to compute RS_V4 signature image digest.")
+            }
+        }
+
+        return ValidationResult(
+            isValid = errors.isEmpty(),
+            errors = errors.distinct()
+        )
+    }
+
+    /**
      * Checks whether a signature image file is a valid image.
      */
     fun isValidImage(file: File): Boolean {
@@ -89,5 +117,17 @@ object SignatureValidation {
         BitmapFactory.decodeFile(file.absolutePath, options)
 
         return options.outWidth > 0 && options.outHeight > 0
+    }
+
+    private fun computeSha256Hex(file: File): String? {
+        return try {
+            val bytes = file.readBytes()
+            if (bytes.isEmpty()) return null
+            MessageDigest.getInstance("SHA-256")
+                .digest(bytes)
+                .joinToString("") { "%02x".format(it) }
+        } catch (_: Exception) {
+            null
+        }
     }
 }
