@@ -295,7 +295,6 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
         root.addView(instruction)
         root.addView(editorView, previewParams)
         root.addView(navigation)
-        root.addView(pageLabel)
         root.addView(sizeLabel)
         root.addView(sizeSeekBar)
 
@@ -306,6 +305,9 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
                 dp(54)
             )
         )
+
+        // pageLabel is already inside navigation.
+        // Do not add it to root a second time.
 
         setContentView(root)
     }
