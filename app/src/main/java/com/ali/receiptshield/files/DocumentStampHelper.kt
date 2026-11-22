@@ -1,9 +1,12 @@
+
 package com.ali.receiptshield.files
 
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import com.ali.receiptshield.crypto.ReceiptSecurityManager
+import com.ali.receiptshield.signature.DocumentSignature
+import com.ali.receiptshield.signature.SignaturePlacementProcessor
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
@@ -13,6 +16,7 @@ import com.tom_roush.pdfbox.rendering.PDFRenderer
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.util.LinkedHashMap
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
@@ -28,9 +32,14 @@ class DocumentStampHelper(
     }
 
     // ---------------------------------------------------------
-    // PDF STAMPING
+    // PDF QR STAMPING
     // ---------------------------------------------------------
 
+    /**
+     * Existing QR-only PDF stamping method.
+     *
+     * Kept for backward compatibility with existing app code.
+     */
     fun stampPdf(
         originalBytes: ByteArray,
         qrBitmap: Bitmap,
@@ -64,11 +73,10 @@ class DocumentStampHelper(
                 true,
                 true
             ).use { stream ->
-
                 stream.drawImage(
                     qrImage,
-                    x,
-                    y,
+                    pageBox.lowerLeftX + x,
+                    pageBox.lowerLeftY + y,
                     qrSize,
                     qrSize
                 )
@@ -79,6 +87,166 @@ class DocumentStampHelper(
 
         } finally {
             document.close()
+        }
+    }
+
+    // ---------------------------------------------------------
+    // PDF QR + SIGNATURE STAMPING
+    // ---------------------------------------------------------
+
+    /**
+     * Stamps a PDF with both a QR code and a saved signature.
+     *
+     * The QR code is placed on the last page using the
+     * existing default position.
+     *
+     * The signature is placed on the page and position
+     * selected by the user in SignaturePlacementEditorView.
+     */
+    fun stampPdfWithSignature(
+        originalBytes: ByteArray,
+        qrBitmap: Bitmap,
+        signature: DocumentSignature,
+        outputFile: File
+    ) {
+
+        if (!signature.isSignatureFileAvailable()) {
+            throw IOException("Signature image file is missing or empty.")
+        }
+
+        val signatureBitmap = BitmapFactory.decodeFile(
+            signature.signatureFile.absolutePath
+        ) ?: throw IOException("Unable to decode signature image.")
+
+        try {
+            val document = PDDocument.load(
+                ByteArrayInputStream(originalBytes)
+            )
+
+            try {
+                if (document.numberOfPages == 0) {
+                    document.addPage(PDPage())
+                }
+
+                val signaturePlacement = signature.placement.normalized()
+
+                if (signaturePlacement.pageIndex !in 0 until document.numberOfPages) {
+                    throw IllegalArgumentException(
+                        "Selected signature page does not exist."
+                    )
+                }
+
+                // -------------------------------------------------
+                // INSERT QR CODE
+                // -------------------------------------------------
+
+                val qrPage = document.getPage(
+                    document.numberOfPages - 1
+                )
+
+                val qrPageBox = qrPage.mediaBox
+
+                val qrImage = LosslessFactory.createFromImage(
+                    document,
+                    qrBitmap
+                )
+
+                val qrSize = 60f
+                val margin = 24f
+
+                val qrX = (
+                    qrPageBox.width - qrSize - margin
+                ).coerceAtLeast(0f)
+
+                val qrY = margin
+
+                PDPageContentStream(
+                    document,
+                    qrPage,
+                    PDPageContentStream.AppendMode.APPEND,
+                    true,
+                    true
+                ).use { stream ->
+
+                    stream.drawImage(
+                        qrImage,
+                        qrPageBox.lowerLeftX + qrX,
+                        qrPageBox.lowerLeftY + qrY,
+                        qrSize,
+                        qrSize
+                    )
+                }
+
+                // -------------------------------------------------
+                // INSERT SIGNATURE
+                // -------------------------------------------------
+
+                val signaturePage = document.getPage(
+                    signaturePlacement.pageIndex
+                )
+
+                val pageBox = signaturePage.mediaBox
+
+                val bounds = SignaturePlacementProcessor.calculateBounds(
+                    placement = signaturePlacement,
+                    pageWidth = pageBox.width,
+                    pageHeight = pageBox.height,
+                    signatureBitmap = signatureBitmap
+                )
+
+                if (!SignaturePlacementProcessor.fitsOnPage(
+                        bounds,
+                        pageBox.width,
+                        pageBox.height
+                    )
+                ) {
+                    throw IllegalArgumentException(
+                        "Signature does not fit inside the selected PDF page."
+                    )
+                }
+
+                val signatureImage = LosslessFactory.createFromImage(
+                    document,
+                    signatureBitmap
+                )
+
+                // The editor uses top-left coordinates.
+                // PDFBox uses bottom-left coordinates.
+                val pdfX = pageBox.lowerLeftX + bounds.left
+
+                val pdfY = pageBox.lowerLeftY +
+                    pageBox.height - bounds.bottom
+
+                PDPageContentStream(
+                    document,
+                    signaturePage,
+                    PDPageContentStream.AppendMode.APPEND,
+                    true,
+                    true
+                ).use { stream ->
+
+                    stream.drawImage(
+                        signatureImage,
+                        pdfX,
+                        pdfY,
+                        bounds.width,
+                        bounds.height
+                    )
+                }
+
+                // -------------------------------------------------
+                // SAVE OUTPUT
+                // -------------------------------------------------
+
+                outputFile.parentFile?.mkdirs()
+                document.save(outputFile)
+
+            } finally {
+                document.close()
+            }
+
+        } finally {
+            signatureBitmap.recycle()
         }
     }
 
@@ -118,9 +286,11 @@ class DocumentStampHelper(
             "media/receiptshield_qr.png"
         )
 
-        entries[relationshipPath] = updatedRelationships.toByteArray(Charsets.UTF_8)
+        entries[relationshipPath] =
+            updatedRelationships.toByteArray(Charsets.UTF_8)
 
         val contentTypesPath = "[Content_Types].xml"
+
         val contentTypesXml = entries[contentTypesPath]
             ?.toString(Charsets.UTF_8)
             ?: throw IllegalArgumentException(
@@ -181,7 +351,6 @@ class DocumentStampHelper(
     <w:r>
         <w:drawing>
             <wp:inline distT="0" distB="0" distL="0" distR="0">
-                <!-- FIX: Changed extent from 1047750 to 600000 to make it smaller -->
                 <wp:extent cx="600000" cy="600000"/>
                 <wp:docPr id="9001" name="ReceiptShield QR Code"/>
                 <wp:cNvGraphicFramePr/>
@@ -201,7 +370,6 @@ class DocumentStampHelper(
                             <pic:spPr>
                                 <a:xfrm>
                                     <a:off x="0" y="0"/>
-                                    <!-- FIX: Changed extent from 1047750 to 600000 -->
                                     <a:ext cx="600000" cy="600000"/>
                                 </a:xfrm>
                                 <a:prstGeom prst="rect">
@@ -236,7 +404,9 @@ class DocumentStampHelper(
         val regex = Regex("""Id="rId(\d+)"""")
 
         val highest = regex.findAll(xml)
-            .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
+            .mapNotNull {
+                it.groupValues.getOrNull(1)?.toIntOrNull()
+            }
             .maxOrNull() ?: 0
 
         return "rId${highest + 1}"
@@ -247,13 +417,14 @@ class DocumentStampHelper(
     // ---------------------------------------------------------
 
     fun extractQrFromPdf(pdfBytes: ByteArray): String? {
-        val document = PDDocument.load(ByteArrayInputStream(pdfBytes))
+        val document = PDDocument.load(
+            ByteArrayInputStream(pdfBytes)
+        )
 
         try {
             val renderer = PDFRenderer(document)
 
             for (pageIndex in 0 until document.numberOfPages) {
-                // FIX: Increased DPI from 180f to 300f to read the smaller QR code
                 val bitmap = renderer.renderImageWithDPI(
                     pageIndex,
                     300f
