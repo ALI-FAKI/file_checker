@@ -1,12 +1,14 @@
-
 package com.ali.receiptshield.crypto
 
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.PrivateKey
 import java.security.Signature
+import java.security.spec.X509EncodedKeySpec
 import java.util.Base64
 
 class ReceiptKeyManager {
@@ -30,7 +32,7 @@ class ReceiptKeyManager {
         val existingPrivateKey = keyStore.getKey(
             KEY_ALIAS,
             null
-        ) as? java.security.PrivateKey
+        ) as? PrivateKey
 
         val existingCertificate = keyStore.getCertificate(KEY_ALIAS)
 
@@ -64,7 +66,7 @@ class ReceiptKeyManager {
         return generator.generateKeyPair()
     }
 
-    fun sign(data: String): String {
+    fun sign(data: ByteArray): String {
         require(data.isNotEmpty()) {
             "Cannot sign empty data."
         }
@@ -76,15 +78,22 @@ class ReceiptKeyManager {
         )
 
         signer.initSign(keyPair.private)
-        signer.update(data.toByteArray(Charsets.UTF_8))
+        signer.update(data)
 
         val signatureBytes = signer.sign()
 
         return Base64.getEncoder().encodeToString(signatureBytes)
     }
 
+    fun sign(data: String): String {
+        require(data.isNotEmpty()) {
+            "Cannot sign empty data."
+        }
+        return sign(data.toByteArray(Charsets.UTF_8))
+    }
+
     fun verify(
-        data: String,
+        data: ByteArray,
         signatureBase64: String,
         publicKeyBase64: String
     ): Boolean {
@@ -101,10 +110,10 @@ class ReceiptKeyManager {
                 publicKeyBase64
             )
 
-            val keyFactory = java.security.KeyFactory.getInstance("RSA")
+            val keyFactory = KeyFactory.getInstance("RSA")
 
             val publicKey = keyFactory.generatePublic(
-                java.security.spec.X509EncodedKeySpec(publicKeyBytes)
+                X509EncodedKeySpec(publicKeyBytes)
             )
 
             val signatureBytes = Base64.getDecoder().decode(
@@ -116,13 +125,26 @@ class ReceiptKeyManager {
             )
 
             verifier.initVerify(publicKey)
-            verifier.update(data.toByteArray(Charsets.UTF_8))
+            verifier.update(data)
 
             verifier.verify(signatureBytes)
 
         } catch (_: Exception) {
             false
         }
+    }
+
+    fun verify(
+        data: String,
+        signatureBase64: String,
+        publicKeyBase64: String
+    ): Boolean {
+        if (data.isEmpty()) return false
+        return verify(
+            data = data.toByteArray(Charsets.UTF_8),
+            signatureBase64 = signatureBase64,
+            publicKeyBase64 = publicKeyBase64
+        )
     }
 
     fun getPublicKeyBase64(): String {
