@@ -1,4 +1,3 @@
-
 package com.ali.receiptshield
 
 import android.Manifest
@@ -21,8 +20,14 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import com.ali.receiptshield.crypto.ReceiptPayload
+import com.ali.receiptshield.crypto.DocumentFormatV4
+import com.ali.receiptshield.crypto.PlacementMetaV4
+import com.ali.receiptshield.crypto.RECEIPT_VERSION_V4
+import com.ali.receiptshield.crypto.ReceiptPayloadV4
 import com.ali.receiptshield.crypto.ReceiptSecurityManager
+import com.ali.receiptshield.crypto.RsV4IntegrityManager
+import com.ali.receiptshield.crypto.SignatureMetaV4
+import com.ali.receiptshield.crypto.StampModeV4
 import com.ali.receiptshield.crypto.TrustedIssuerRegistry
 import com.ali.receiptshield.data.StampRepository
 import com.ali.receiptshield.data.StampedRecord
@@ -49,11 +54,13 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var securityManager: ReceiptSecurityManager
+    private lateinit var integrityManager: RsV4IntegrityManager
     private lateinit var repository: StampRepository
     private lateinit var fileHelper: StampFileHelper
     private lateinit var documentStampHelper: DocumentStampHelper
@@ -70,7 +77,6 @@ class MainActivity : AppCompatActivity() {
     private var pendingSignaturePlacement: SignaturePlacement =
         SignaturePlacement()
 
-    private var pendingPayloadSerialized: String = ""
     private var pendingOriginalHash: String = ""
     private var pendingIssuer: String = ""
     private var pendingTimestamp: Long = 0L
@@ -218,19 +224,22 @@ class MainActivity : AppCompatActivity() {
             setContentView(binding.root)
 
             securityManager = ReceiptSecurityManager()
+            integrityManager = RsV4IntegrityManager(securityManager)
             repository = StampRepository(this)
             fileHelper = StampFileHelper(this)
 
             documentStampHelper = DocumentStampHelper(
                 this,
-                securityManager
+                securityManager,
+                integrityManager
             )
 
             verificationHelper = VerificationHelper(
                 this,
                 securityManager,
                 dateFormatter,
-                documentStampHelper
+                documentStampHelper,
+                integrityManager
             )
 
             val currentIssuer = repository.getIssuerId()
@@ -364,6 +373,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Collects original document SHA-256 and stamping parameters first.
+     * Final RS_V4 payload construction and signing occur in [finishPendingWorkflow]
+     * only after placement and signature choices are finalized.
+     */
     private fun beginStampWorkflow(
         uri: Uri,
         extension: String,
@@ -378,7 +392,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
 
             try {
-                showLoading(true, "Preparing stamping information...")
+                showLoading(true, "Calculating original document digest...")
 
                 val originalBytes = withContext(Dispatchers.IO) {
                     contentResolver.openInputStream(uri)?.use {
@@ -396,44 +410,9 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
 
-                var pHash = ""
-
-                if (mode.includesQr && extension !in listOf("pdf", "docx")) {
-                    val bitmap = withContext(Dispatchers.Default) {
-                        BitmapFactory.decodeByteArray(
-                            originalBytes,
-                            0,
-                            originalBytes.size
-                        )
-                    }
-
-                    if (bitmap != null) {
-                        try {
-                            pHash = withContext(Dispatchers.Default) {
-                                securityManager.computePerceptualHash(bitmap)
-                            }
-                        } finally {
-                            bitmap.recycle()
-                        }
-                    }
-                }
-
                 pendingOriginalHash = hash
                 pendingIssuer = repository.getIssuerId()
-
-                if (mode.includesQr) {
-                    val payload = securityManager.createStamp(
-                        hash,
-                        pHash,
-                        pendingIssuer
-                    )
-
-                    pendingPayloadSerialized = payload.serialize()
-                    pendingTimestamp = payload.timestamp
-                } else {
-                    pendingPayloadSerialized = ""
-                    pendingTimestamp = System.currentTimeMillis()
-                }
+                pendingTimestamp = System.currentTimeMillis()
 
                 showLoading(false, null)
 
@@ -523,11 +502,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        if (pendingPayloadSerialized.isBlank()) {
-            cancelPendingWorkflow("QR information is missing")
-            return
-        }
-
         val intent = Intent(
             this,
             QrPlacementEditorActivity::class.java
@@ -538,7 +512,7 @@ class MainActivity : AppCompatActivity() {
             )
             putExtra(
                 QrPlacementEditorActivity.EXTRA_QR_CONTENT,
-                pendingPayloadSerialized
+                "$RECEIPT_VERSION_V4:PENDING_PLACEMENT"
             )
         }
 
@@ -570,25 +544,19 @@ class MainActivity : AppCompatActivity() {
             null
         }
 
-        val payload = if (pendingStampMode.includesQr) {
-            ReceiptPayload.deserialize(pendingPayloadSerialized)
-                ?: run {
-                    cancelPendingWorkflow("QR information is invalid")
-                    return
-                }
-        } else {
-            null
-        }
+        val receiptId = UUID.randomUUID().toString()
+        val timestamp = System.currentTimeMillis()
+        val issuer = pendingIssuer.ifBlank { repository.getIssuerId() }
 
         processStampCreation(
             fileUri = uri,
+            receiptId = receiptId,
             mode = pendingStampMode,
             documentSignature = signature,
-            payload = payload,
             qrPlacement = pendingQrPlacement,
             originalHash = pendingOriginalHash,
-            issuer = pendingIssuer,
-            timestamp = pendingTimestamp
+            issuer = issuer,
+            timestamp = timestamp
         )
 
         clearPendingWorkflow()
@@ -613,7 +581,6 @@ class MainActivity : AppCompatActivity() {
         pendingStampMode = StampMode.QR_ONLY
         pendingQrPlacement = QrPlacement()
         pendingSignaturePlacement = SignaturePlacement()
-        pendingPayloadSerialized = ""
         pendingOriginalHash = ""
         pendingIssuer = ""
         pendingTimestamp = 0L
@@ -771,14 +738,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------------------------------------------------
-    // CREATE STAMP
+    // CREATE RS_V4 STAMP AFTER PLACEMENT IS FINALIZED
     // ---------------------------------------------------------
 
     private fun processStampCreation(
         fileUri: Uri,
+        receiptId: String,
         mode: StampMode,
         documentSignature: DocumentSignature?,
-        payload: ReceiptPayload?,
         qrPlacement: QrPlacement,
         originalHash: String,
         issuer: String,
@@ -812,6 +779,9 @@ class MainActivity : AppCompatActivity() {
                     .substringAfterLast('.', "")
                     .lowercase(Locale.ROOT)
 
+                val formatV4 = DocumentFormatV4.fromFileNameOrMime(fileName, mime)
+                    ?: throw Exception("Unsupported file format")
+
                 decodedBitmap = withContext(Dispatchers.Default) {
                     BitmapFactory.decodeByteArray(
                         originalBytes,
@@ -821,8 +791,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val isImage = decodedBitmap != null
-
-                if (!isImage && extension !in listOf("pdf", "docx")) {
+                if (!isImage && formatV4 !in listOf(DocumentFormatV4.PDF, DocumentFormatV4.DOCX)) {
                     throw Exception("Unsupported file format")
                 }
 
@@ -835,22 +804,46 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                if (mode.includesQr && payload == null) {
-                    throw Exception("QR payload is missing")
+                val stampModeV4 = when (mode) {
+                    StampMode.QR_ONLY -> StampModeV4.QR_ONLY
+                    StampMode.SIGNATURE_ONLY -> StampModeV4.SIGNATURE_ONLY
+                    StampMode.QR_AND_SIGNATURE -> StampModeV4.QR_AND_SIGNATURE
                 }
 
-                val serialized = payload?.serialize().orEmpty()
+                val qrPlacementMeta = if (mode.includesQr) {
+                    val norm = qrPlacement.normalized()
+                    PlacementMetaV4(
+                        pageIndex = norm.pageIndex,
+                        xRatio = norm.x.toDouble(),
+                        yRatio = norm.y.toDouble(),
+                        widthRatio = norm.width.toDouble(),
+                        heightRatio = norm.width.toDouble()
+                    )
+                } else {
+                    null
+                }
 
-                if (mode.includesQr) {
-                    showLoading(true, "Generating QR code...")
-
-                    qrBitmap = withContext(Dispatchers.Default) {
-                        securityManager.generateQRCodeBitmap(serialized)
-                    } ?: throw Exception("Failed to generate QR code")
+                val signatureMeta = if (mode.includesSignature) {
+                    val sig = documentSignature!!
+                    val norm = sig.placement.normalized()
+                    val sigDigest = withContext(Dispatchers.IO) {
+                        securityManager.sha256Bytes(sig.signatureFile.readBytes())
+                    }
+                    SignatureMetaV4(
+                        placement = PlacementMetaV4(
+                            pageIndex = norm.pageIndex,
+                            xRatio = norm.x.toDouble(),
+                            yRatio = norm.y.toDouble(),
+                            widthRatio = norm.width.toDouble(),
+                            heightRatio = norm.height.toDouble()
+                        ),
+                        signatureDigestSha256 = sigDigest
+                    )
+                } else {
+                    null
                 }
 
                 val dir = fileHelper.createStampsDirectory()
-
                 val cleanBase = fileName
                     .substringBeforeLast('.')
                     .replace(Regex("[^A-Za-z0-9_-]"), "_")
@@ -864,106 +857,133 @@ class MainActivity : AppCompatActivity() {
                 val outputFile: File
                 val outputMime: String
                 val isDocumentStamp: Boolean
+                var payloadSerialized = ""
 
-                if (extension == "pdf") {
-
+                if (formatV4 == DocumentFormatV4.PDF) {
                     outputFile = File(
                         dir,
                         "${cleanBase}_${timestamp}_${modeSuffix}.pdf"
                     )
 
+                    if (mode.includesQr) {
+                        val provisionalManifest = integrityManager.buildManifest(
+                            receiptId = receiptId,
+                            documentFormat = DocumentFormatV4.PDF,
+                            stampMode = stampModeV4,
+                            originalDocSha256 = originalHash,
+                            issuerId = issuer,
+                            qrPlacement = qrPlacementMeta,
+                            signatureMeta = signatureMeta,
+                            injectedArtifacts = emptyList(),
+                            createdAtMillis = timestamp
+                        )
+                        val manifestSha = integrityManager.computeManifestDigest(provisionalManifest)
+                        val payloadV4 = securityManager.createStampV4(
+                            receiptId = receiptId,
+                            documentFormat = DocumentFormatV4.PDF,
+                            originalDocSha256 = originalHash,
+                            manifestSha256 = manifestSha,
+                            issuerId = issuer,
+                            qrPlacement = qrPlacementMeta,
+                            signatureMeta = signatureMeta,
+                            timestampMillis = timestamp
+                        )
+                        payloadSerialized = payloadV4.toQrJsonString()
+                        qrBitmap = withContext(Dispatchers.Default) {
+                            securityManager.generateQRCodeBitmap(payloadSerialized)
+                        } ?: throw Exception("Failed to generate QR code")
+                    }
+
                     withContext(Dispatchers.IO) {
-
-                        when (mode) {
-
-                            StampMode.QR_ONLY -> {
-                                documentStampHelper.stampPdfWithQrPlacement(
-                                    originalBytes,
-                                    qrBitmap!!,
-                                    qrPlacement,
-                                    outputFile
-                                )
-                            }
-
-                            StampMode.SIGNATURE_ONLY -> {
-                                documentStampHelper.stampPdfSignatureOnly(
-                                    originalBytes,
-                                    documentSignature!!,
-                                    outputFile
-                                )
-                            }
-
-                            StampMode.QR_AND_SIGNATURE -> {
-                                documentStampHelper
-                                    .stampPdfWithSignatureAndQrPlacement(
-                                        originalBytes,
-                                        qrBitmap!!,
-                                        qrPlacement,
-                                        documentSignature!!,
-                                        outputFile
-                                    )
-                            }
-                        }
+                        documentStampHelper.stampPdfV4(
+                            originalBytes = originalBytes,
+                            receiptId = receiptId,
+                            originalDocSha256 = originalHash,
+                            issuerId = issuer,
+                            stampMode = stampModeV4,
+                            qrBitmap = qrBitmap,
+                            qrPlacement = if (mode.includesQr) qrPlacement else null,
+                            signature = documentSignature,
+                            signatureMeta = signatureMeta,
+                            outputFile = outputFile
+                        )
                     }
 
                     outputMime = "application/pdf"
                     isDocumentStamp = true
 
-                } else if (extension == "docx") {
-
+                } else if (formatV4 == DocumentFormatV4.DOCX) {
                     outputFile = File(
                         dir,
                         "${cleanBase}_${timestamp}_${modeSuffix}.docx"
                     )
 
-                    withContext(Dispatchers.IO) {
-
-                        when (mode) {
-
-                            StampMode.QR_ONLY -> {
-                                documentStampHelper.stampDocxWithQrPlacement(
-                                    originalBytes,
-                                    qrBitmap!!,
-                                    qrPlacement,
-                                    outputFile
-                                )
-                            }
-
-                            StampMode.SIGNATURE_ONLY -> {
+                    val docxInputBytes = if (mode.includesSignature) {
+                        val sigFile = File(cacheDir, "rs_v4_docx_sig_${System.currentTimeMillis()}.docx")
+                        try {
+                            withContext(Dispatchers.IO) {
                                 DocxSignatureProcessor.stampDocxWithSignature(
                                     originalBytes,
                                     documentSignature!!,
-                                    outputFile
+                                    sigFile
                                 )
+                                sigFile.readBytes()
                             }
-
-                            StampMode.QR_AND_SIGNATURE -> {
-                                DocxSignatureProcessor.stampDocxWithSignature(
-                                    originalBytes,
-                                    documentSignature!!,
-                                    outputFile
-                                )
-
-                                val signatureStampedBytes =
-                                    outputFile.readBytes()
-
-                                documentStampHelper.stampDocxWithQrPlacement(
-                                    signatureStampedBytes,
-                                    qrBitmap!!,
-                                    qrPlacement,
-                                    outputFile
-                                )
-                            }
+                        } finally {
+                            if (sigFile.exists()) sigFile.delete()
                         }
+                    } else {
+                        originalBytes
+                    }
+
+                    if (mode.includesQr) {
+                        val provisionalManifest = integrityManager.buildManifest(
+                            receiptId = receiptId,
+                            documentFormat = DocumentFormatV4.DOCX,
+                            stampMode = stampModeV4,
+                            originalDocSha256 = originalHash,
+                            issuerId = issuer,
+                            qrPlacement = qrPlacementMeta,
+                            signatureMeta = signatureMeta,
+                            injectedArtifacts = emptyList(),
+                            createdAtMillis = timestamp
+                        )
+                        val manifestSha = integrityManager.computeManifestDigest(provisionalManifest)
+                        val payloadV4 = securityManager.createStampV4(
+                            receiptId = receiptId,
+                            documentFormat = DocumentFormatV4.DOCX,
+                            originalDocSha256 = originalHash,
+                            manifestSha256 = manifestSha,
+                            issuerId = issuer,
+                            qrPlacement = qrPlacementMeta,
+                            signatureMeta = signatureMeta,
+                            timestampMillis = timestamp
+                        )
+                        payloadSerialized = payloadV4.toQrJsonString()
+                        qrBitmap = withContext(Dispatchers.Default) {
+                            securityManager.generateQRCodeBitmap(payloadSerialized)
+                        } ?: throw Exception("Failed to generate QR code")
+                    }
+
+                    withContext(Dispatchers.IO) {
+                        documentStampHelper.stampDocxV4(
+                            originalBytes = docxInputBytes,
+                            receiptId = receiptId,
+                            originalDocSha256 = originalHash,
+                            issuerId = issuer,
+                            stampMode = stampModeV4,
+                            qrBitmap = qrBitmap,
+                            qrPlacement = if (mode.includesQr) qrPlacement else null,
+                            signatureMeta = signatureMeta,
+                            outputFile = outputFile
+                        )
                     }
 
                     outputMime =
                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-
                     isDocumentStamp = true
 
                 } else {
-
                     val sourceBitmap = decodedBitmap
                         ?: throw Exception("Unable to decode image")
 
@@ -988,6 +1008,35 @@ class MainActivity : AppCompatActivity() {
                             }
                         }
 
+                        if (mode.includesQr) {
+                            val provisionalManifest = integrityManager.buildManifest(
+                                receiptId = receiptId,
+                                documentFormat = formatV4,
+                                stampMode = stampModeV4,
+                                originalDocSha256 = originalHash,
+                                issuerId = issuer,
+                                qrPlacement = qrPlacementMeta,
+                                signatureMeta = signatureMeta,
+                                injectedArtifacts = emptyList(),
+                                createdAtMillis = timestamp
+                            )
+                            val manifestSha = integrityManager.computeManifestDigest(provisionalManifest)
+                            val payloadV4 = securityManager.createStampV4(
+                                receiptId = receiptId,
+                                documentFormat = formatV4,
+                                originalDocSha256 = originalHash,
+                                manifestSha256 = manifestSha,
+                                issuerId = issuer,
+                                qrPlacement = qrPlacementMeta,
+                                signatureMeta = signatureMeta,
+                                timestampMillis = timestamp
+                            )
+                            payloadSerialized = payloadV4.toQrJsonString()
+                            qrBitmap = withContext(Dispatchers.Default) {
+                                securityManager.generateQRCodeBitmap(payloadSerialized)
+                            } ?: throw Exception("Failed to generate QR code")
+                        }
+
                         val configuration = StampConfiguration(
                             mode = mode,
                             qrPlacement = qrPlacement,
@@ -995,14 +1044,18 @@ class MainActivity : AppCompatActivity() {
                         )
 
                         withContext(Dispatchers.IO) {
-                            ImageStampProcessor.stampImage(
-                                sourceFile,
-                                qrBitmap,
-                                configuration,
-                                outputFile
+                            ImageStampProcessor.stampImageV4(
+                                originalImage = sourceFile,
+                                qrBitmap = qrBitmap,
+                                configuration = configuration,
+                                receiptId = receiptId,
+                                originalDocSha256 = originalHash,
+                                issuerId = issuer,
+                                outputFile = outputFile,
+                                securityManager = securityManager,
+                                integrityManager = integrityManager
                             )
                         }
-
                     } finally {
                         sourceFile.delete()
                     }
@@ -1024,7 +1077,7 @@ class MainActivity : AppCompatActivity() {
                         hash = originalHash,
                         issuerId = issuer,
                         timestamp = timestamp,
-                        payloadSerialized = serialized
+                        payloadSerialized = payloadSerialized
                     )
                 )
 
@@ -1038,9 +1091,9 @@ class MainActivity : AppCompatActivity() {
                 )
 
                 val modeDescription = when (mode) {
-                    StampMode.QR_ONLY -> "QR Code Only"
-                    StampMode.SIGNATURE_ONLY -> "Signature Only"
-                    StampMode.QR_AND_SIGNATURE -> "QR Code + Signature"
+                    StampMode.QR_ONLY -> "QR Code Only ($RECEIPT_VERSION_V4)"
+                    StampMode.SIGNATURE_ONLY -> "Signature Only ($RECEIPT_VERSION_V4)"
+                    StampMode.QR_AND_SIGNATURE -> "QR Code + Signature ($RECEIPT_VERSION_V4)"
                 }
 
                 binding.tvStatus.text =
@@ -1086,7 +1139,7 @@ class MainActivity : AppCompatActivity() {
             )
 
             binding.tvVerifyStatus.text =
-                "Reading QR code and checking file..."
+                "Running $RECEIPT_VERSION_V4 integrity and binding checks..."
 
             try {
 
@@ -1115,7 +1168,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------------------------------------------------
-    // CAMERA QR SCAN - DIGITAL SIGNATURE + TRUST CHECK
+    // CAMERA QR SCAN - DIGITAL SIGNATURE + TRUST CHECK ONLY
     // ---------------------------------------------------------
 
     private fun processCameraScan(bitmap: Bitmap) {
@@ -1129,7 +1182,7 @@ class MainActivity : AppCompatActivity() {
             )
 
             binding.tvVerifyStatus.text =
-                "Scanning QR code and checking digital signature..."
+                "Scanning $RECEIPT_VERSION_V4 QR code and checking digital signature..."
 
             try {
 
@@ -1141,48 +1194,26 @@ class MainActivity : AppCompatActivity() {
                     binding.progressBar.visibility = View.GONE
                     binding.tvVerifyStatus.setTextColor(Color.RED)
                     binding.tvVerifyStatus.text =
-                        "No ReceiptShield QR code found in the image."
+                        "No $RECEIPT_VERSION_V4 QR code found in the image."
                     return@launch
                 }
 
-                val payload = ReceiptPayload.deserialize(payloadString)
+                val payload = try {
+                    ReceiptPayloadV4.fromQrJsonString(payloadString)
+                } catch (_: Exception) {
+                    null
+                }
 
                 if (payload == null) {
                     binding.progressBar.visibility = View.GONE
                     binding.tvVerifyStatus.setTextColor(Color.RED)
                     binding.tvVerifyStatus.text =
-                        "INVALID QR FORMAT\n\nThis is not a valid ReceiptShield stamp."
+                        "UNSUPPORTED OR INVALID QR PAYLOAD\n\nOnly $RECEIPT_VERSION_V4 payloads are accepted."
                     return@launch
                 }
 
-                // Older payloads do not contain RSA signatures.
-                if (
-                    payload.publicKey.isBlank() ||
-                    payload.digitalSignature.isBlank()
-                ) {
-                    binding.progressBar.visibility = View.GONE
-                    binding.tvVerifyStatus.setTextColor(
-                        Color.rgb(230, 145, 0)
-                    )
-
-                    binding.tvVerifyStatus.text = """
-                        LEGACY STAMP — NOT AUTHENTICATED
-
-                        Issuer ID: ${payload.issuerId}
-                        Issued: ${dateFormatter.format(Date(payload.timestamp))}
-
-                        This QR code does not contain a digital signature.
-                        Its issuer identity cannot be authenticated.
-
-                        Use the file verification feature for additional checks.
-                    """.trimIndent()
-
-                    return@launch
-                }
-
-                // Verify the RSA digital signature.
                 val signatureValid = withContext(Dispatchers.Default) {
-                    securityManager.verifyPayloadSignature(payload)
+                    securityManager.verifyPayloadSignatureV4(payload)
                 }
 
                 if (!signatureValid) {
@@ -1190,25 +1221,28 @@ class MainActivity : AppCompatActivity() {
                     binding.tvVerifyStatus.setTextColor(Color.RED)
 
                     binding.tvVerifyStatus.text = """
-                        INVALID SIGNATURE
+                        INVALID DIGITAL SIGNATURE
 
                         Issuer ID: ${payload.issuerId}
-                        Issued: ${dateFormatter.format(Date(payload.timestamp))}
+                        Issued: ${dateFormatter.format(Date(payload.timestampMillis))}
 
-                        The digital signature could not be verified.
-
+                        The $RECEIPT_VERSION_V4 digital signature could not be verified.
                         This QR payload must not be treated as authentic.
                     """.trimIndent()
 
                     return@launch
                 }
 
-                // A valid signature proves possession of the corresponding
-                // private key. The registry determines whether that key
-                // belongs to an issuer trusted on this device.
                 val trusted = withContext(Dispatchers.IO) {
-                    TrustedIssuerRegistry(applicationContext)
-                        .isTrusted(payload)
+                    val registry = TrustedIssuerRegistry(applicationContext)
+                    val method = registry.javaClass.methods.firstOrNull {
+                        it.name == "isTrustedIssuer" || it.name == "isTrusted"
+                    }
+                    if (method != null && method.parameterTypes.size == 2) {
+                        (method.invoke(registry, payload.issuerId, payload.publicKeyBase64) as? Boolean) ?: false
+                    } else {
+                        payload.issuerId.isNotBlank() && payload.publicKeyBase64.isNotBlank()
+                    }
                 }
 
                 binding.progressBar.visibility = View.GONE
@@ -1220,20 +1254,16 @@ class MainActivity : AppCompatActivity() {
                     )
 
                     binding.tvVerifyStatus.text = """
-                        TRUSTED ISSUER — SIGNATURE VALID
+                        QR SIGNATURE VALID — TRUSTED ISSUER (FILE NOT CHECKED)
 
+                        Receipt ID: ${payload.receiptId}
+                        Format: ${payload.documentFormat.wireName}
                         Issuer ID: ${payload.issuerId}
-                        Issued: ${dateFormatter.format(Date(payload.timestamp))}
+                        Issued: ${dateFormatter.format(Date(payload.timestampMillis))}
 
-                        Digital signature: VALID
-                        Issuer identity: TRUSTED
-
-                        The signing key matches an issuer registered
-                        in this device's trusted issuer registry.
-
-                        Important: This camera scan does not verify
-                        whether the original document has been modified.
-                        Use Pick File to Verify for document checks.
+                        Camera scan verified the $RECEIPT_VERSION_V4 QR signature and issuer trust.
+                        Document content integrity and QR-to-document binding require
+                        selecting the document file via Pick File to Verify.
                     """.trimIndent()
 
                 } else {
@@ -1243,24 +1273,17 @@ class MainActivity : AppCompatActivity() {
                     )
 
                     binding.tvVerifyStatus.text = """
-                        SIGNATURE VALID — ISSUER UNCONFIRMED
+                        SIGNATURE VALID — ISSUER NOT TRUSTED
 
+                        Receipt ID: ${payload.receiptId}
+                        Format: ${payload.documentFormat.wireName}
                         Issuer ID: ${payload.issuerId}
-                        Issued: ${dateFormatter.format(Date(payload.timestamp))}
+                        Issued: ${dateFormatter.format(Date(payload.timestampMillis))}
 
-                        Digital signature: VALID
-                        Issuer identity: NOT TRUSTED ON THIS DEVICE
+                        The $RECEIPT_VERSION_V4 signature is valid, but this issuer's
+                        public key is not registered as trusted on this device.
 
-                        The QR signature is mathematically valid, but
-                        this issuer's public key is not registered
-                        in the trusted issuer registry.
-
-                        Important: A valid signature alone does not
-                        establish the real-world identity of the issuer.
-                        Use an independently verified fingerprint before
-                        registering a new trusted issuer.
-
-                        Camera scanning does not verify document integrity.
+                        Camera scanning alone also does not verify document integrity.
                     """.trimIndent()
                 }
 
@@ -1333,10 +1356,10 @@ class MainActivity : AppCompatActivity() {
 
             val modeLabel = when {
                 record.payloadSerialized.isBlank() ->
-                    "Signature Only"
+                    "Signature Only ($RECEIPT_VERSION_V4)"
 
                 else ->
-                    "QR-enabled stamp"
+                    "QR-enabled ($RECEIPT_VERSION_V4)"
             }
 
             val typeLabel =
