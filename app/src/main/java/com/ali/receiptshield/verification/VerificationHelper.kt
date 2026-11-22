@@ -37,14 +37,15 @@ class VerificationHelper(
             val fileBytes = readFile(fileUri)
 
             if (fileBytes.isEmpty()) {
-                return@withContext failure("The selected file is empty.")
+                return@withContext failure(
+                    "The selected file is empty."
+                )
             }
 
             val extension = fileName
                 .substringAfterLast('.', "")
                 .lowercase()
 
-            // Extract the QR code according to the file type.
             val qrContent: String? = when (extension) {
 
                 "pdf" -> {
@@ -69,7 +70,9 @@ class VerificationHelper(
                     )
 
                     if (bitmap == null) {
-                        return@withContext failure("Unsupported file format.")
+                        return@withContext failure(
+                            "Unsupported file format."
+                        )
                     }
 
                     try {
@@ -95,14 +98,43 @@ class VerificationHelper(
                 dateFormatter.format(Date(payload.timestamp))
             }
 
-            // A valid QR payload proves only that readable ReceiptShield
-            // data was detected. It does not prove the document is unchanged,
-            // that the issuer is genuine, or that the QR code was not copied.
+            // Legacy payloads do not contain a digital signature.
+            if (payload.version != "RS_V3") {
+                return@withContext VerificationOutcome(
+                    title = "LEGACY STAMP — NOT AUTHENTICATED",
+                    message = """
+                        A legacy ReceiptShield stamp was detected.
 
-            return@withContext VerificationOutcome(
-                title = "STAMP DETECTED — NOT AUTHENTICATED",
-                message = """
-                    A valid ReceiptShield QR code was detected.
+                        File: $fileName
+
+                        Issuer ID in QR: ${payload.issuerId}
+
+                        Recorded issue date: $issueDate
+
+                        SECURITY NOTICE:
+
+                        This stamp uses an older ReceiptShield format
+                        without a cryptographic digital signature.
+
+                        Its issuer identity cannot be authenticated,
+                        and this check cannot establish whether the
+                        document was modified after stamping.
+
+                        This document has NOT been cryptographically authenticated.
+                    """.trimIndent(),
+                    color = Color.rgb(245, 124, 0),
+                    isVerified = false
+                )
+            }
+
+            // Verify the RS_V3 digital signature.
+            val signatureValid = securityManager
+                .verifyPayloadSignature(payload)
+
+            if (!signatureValid) {
+                return@withContext failure(
+                    """
+                    The ReceiptShield digital signature is INVALID.
 
                     File: $fileName
 
@@ -110,18 +142,52 @@ class VerificationHelper(
 
                     Recorded issue date: $issueDate
 
-                    SECURITY NOTICE:
+                    The digital signature does not match the
+                    signed QR payload.
 
-                    The QR data is readable and has a valid ReceiptShield
-                    payload format.
+                    The QR data may have been modified, corrupted,
+                    or signed with a different private key.
 
-                    However, this check does not currently verify the
-                    issuer's identity or prove that the file has not
-                    been modified after stamping.
+                    Do not treat this document as authenticated.
+                    """.trimIndent()
+                )
+            }
 
-                    The QR code could also have been copied into another file.
+            // The signature is valid against the public key embedded
+            // in the QR, but that key is not yet checked against a
+            // trusted issuer registry.
+            return@withContext VerificationOutcome(
+                title = "DIGITAL SIGNATURE VALID — ISSUER UNCONFIRMED",
+                message = """
+                    The ReceiptShield digital signature is valid.
 
-                    This document has NOT been cryptographically authenticated.
+                    File: $fileName
+
+                    Issuer ID in QR: ${payload.issuerId}
+
+                    Recorded issue date: $issueDate
+
+                    SIGNATURE RESULT:
+
+                    The signed QR payload matches its digital signature.
+
+                    IMPORTANT TRUST NOTICE:
+
+                    The public key used for verification was supplied
+                    inside the QR code itself.
+
+                    ReceiptShield has not yet checked this key against
+                    a trusted issuer registry.
+
+                    Therefore, the signature is mathematically valid,
+                    but the issuer's real-world identity is NOT confirmed.
+
+                    This check also does not yet prove that the complete
+                    document content has remained unchanged after stamping.
+
+                    A copied QR code may still appear in another file.
+
+                    RESULT: SIGNATURE VALID, ISSUER NOT YET TRUSTED.
                 """.trimIndent(),
                 color = Color.rgb(245, 124, 0),
                 isVerified = false
@@ -135,10 +201,11 @@ class VerificationHelper(
     }
 
     private fun readFile(uri: Uri): ByteArray {
-        val input: InputStream = context.contentResolver.openInputStream(uri)
-            ?: throw IllegalArgumentException(
-                "Unable to open the selected file."
-            )
+        val input: InputStream =
+            context.contentResolver.openInputStream(uri)
+                ?: throw IllegalArgumentException(
+                    "Unable to open the selected file."
+                )
 
         return input.use { it.readBytes() }
     }
