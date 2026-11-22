@@ -1,4 +1,3 @@
-
 package com.ali.receiptshield.signature
 
 import android.content.Context
@@ -101,7 +100,7 @@ class SignaturePlacementEditorView @JvmOverloads constructor(
     fun setPageIndex(index: Int) {
         placement = placement.copy(
             pageIndex = index.coerceAtLeast(0)
-        )
+        ).normalized()
         invalidate()
         onPlacementChanged?.invoke(placement)
     }
@@ -156,7 +155,6 @@ class SignaturePlacementEditorView @JvmOverloads constructor(
     }
 
     private fun drawSignature(canvas: Canvas) {
-        val page = pageBitmap ?: return
         val signature = signatureBitmap ?: return
 
         if (pageRect.isEmpty || signature.width <= 0 || signature.height <= 0) {
@@ -293,7 +291,6 @@ class SignaturePlacementEditorView @JvmOverloads constructor(
     }
 
     private fun updateSignatureRect() {
-        val page = pageBitmap ?: return
         val signature = signatureBitmap ?: return
 
         if (pageRect.isEmpty) return
@@ -318,8 +315,18 @@ class SignaturePlacementEditorView @JvmOverloads constructor(
         )
     }
 
+    private fun computeNormalizedHeight(
+        widthRatio: Float,
+        signature: Bitmap,
+        pageWidth: Float,
+        pageHeight: Float
+    ): Float {
+        if (signature.width <= 0 || pageHeight <= 0f) return placement.height
+        val aspectRatio = signature.height.toFloat() / signature.width.toFloat()
+        return ((widthRatio * pageWidth * aspectRatio) / pageHeight).coerceIn(0.01f, 1f)
+    }
+
     private fun moveSignature(dx: Float, dy: Float) {
-        val page = pageBitmap ?: return
         val signature = signatureBitmap ?: return
 
         val pageWidth = pageRect.width()
@@ -330,11 +337,12 @@ class SignaturePlacementEditorView @JvmOverloads constructor(
         val normalized = placement.normalized()
 
         val signatureWidth = normalized.width
-        val signatureHeight = (
-            signature.width.toFloat() * 0f +
-            (signature.height.toFloat() / signature.width.toFloat()) *
-            signatureWidth * pageWidth
-        ) / pageHeight
+        val signatureHeight = computeNormalizedHeight(
+            widthRatio = signatureWidth,
+            signature = signature,
+            pageWidth = pageWidth,
+            pageHeight = pageHeight
+        )
 
         val newX = (
             normalized.x + dx / pageWidth
@@ -346,12 +354,12 @@ class SignaturePlacementEditorView @JvmOverloads constructor(
 
         placement = normalized.copy(
             x = newX,
-            y = newY
-        )
+            y = newY,
+            height = signatureHeight
+        ).normalized()
     }
 
     private fun resizeSignature(dx: Float, dy: Float) {
-        val page = pageBitmap ?: return
         val signature = signatureBitmap ?: return
 
         val pageWidth = pageRect.width()
@@ -387,10 +395,19 @@ class SignaturePlacementEditorView @JvmOverloads constructor(
             safeMaximum
         )
 
+        val newHeight = computeNormalizedHeight(
+            widthRatio = newWidth,
+            signature = signature,
+            pageWidth = pageWidth,
+            pageHeight = pageHeight
+        )
+
         placement = normalized.copy(
             width = newWidth,
-            x = normalized.x.coerceIn(0f, 1f - newWidth)
-        )
+            height = newHeight,
+            x = normalized.x.coerceIn(0f, 1f - newWidth),
+            y = normalized.y.coerceIn(0f, max(0f, 1f - newHeight))
+        ).normalized()
     }
 
     private fun dp(value: Float): Float {
