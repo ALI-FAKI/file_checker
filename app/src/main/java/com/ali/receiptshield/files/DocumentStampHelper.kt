@@ -1,10 +1,17 @@
-
 package com.ali.receiptshield.files
 
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import com.ali.receiptshield.crypto.DocumentFormatV4
+import com.ali.receiptshield.crypto.InjectedArtifactType
+import com.ali.receiptshield.crypto.InjectedArtifactV4
+import com.ali.receiptshield.crypto.IntegrityManifestV4
+import com.ali.receiptshield.crypto.PlacementMetaV4
 import com.ali.receiptshield.crypto.ReceiptSecurityManager
+import com.ali.receiptshield.crypto.RsV4IntegrityManager
+import com.ali.receiptshield.crypto.SignatureMetaV4
+import com.ali.receiptshield.crypto.StampModeV4
 import com.ali.receiptshield.qr.QrPlacement
 import com.ali.receiptshield.signature.DocumentSignature
 import com.ali.receiptshield.signature.SignaturePlacementProcessor
@@ -25,11 +32,221 @@ import java.util.zip.ZipOutputStream
 
 class DocumentStampHelper(
     private val context: Context,
-    private val securityManager: ReceiptSecurityManager
+    private val securityManager: ReceiptSecurityManager,
+    private val integrityManager: RsV4IntegrityManager = RsV4IntegrityManager(securityManager)
 ) {
 
     init {
         PDFBoxResourceLoader.init(context)
+    }
+
+    // ---------------------------------------------------------
+    // RS_V4 INTEGRATED PDF & DOCX STAMPING
+    // ---------------------------------------------------------
+
+    fun stampPdfV4(
+        originalBytes: ByteArray,
+        receiptId: String,
+        originalDocSha256: String,
+        issuerId: String,
+        stampMode: StampModeV4,
+        qrBitmap: Bitmap?,
+        qrPlacement: QrPlacement?,
+        signature: DocumentSignature?,
+        signatureMeta: SignatureMetaV4?,
+        outputFile: File
+    ): IntegrityManifestV4 {
+        val tempStampedFile = File.createTempFile("rs_v4_pdf_", ".pdf", context.cacheDir)
+        try {
+            when (stampMode) {
+                StampModeV4.QR_ONLY -> {
+                    requireNotNull(qrBitmap) { "QR bitmap is required for QR_ONLY mode." }
+                    if (qrPlacement != null) {
+                        stampPdfWithQrPlacement(originalBytes, qrBitmap, qrPlacement, tempStampedFile)
+                    } else {
+                        stampPdf(originalBytes, qrBitmap, tempStampedFile)
+                    }
+                }
+
+                StampModeV4.SIGNATURE_ONLY -> {
+                    requireNotNull(signature) { "DocumentSignature is required for SIGNATURE_ONLY mode." }
+                    stampPdfSignatureOnly(originalBytes, signature, tempStampedFile)
+                }
+
+                StampModeV4.QR_AND_SIGNATURE -> {
+                    requireNotNull(qrBitmap) { "QR bitmap is required for QR_AND_SIGNATURE mode." }
+                    requireNotNull(signature) { "DocumentSignature is required for QR_AND_SIGNATURE mode." }
+                    if (qrPlacement != null) {
+                        stampPdfWithSignatureAndQrPlacement(
+                            originalBytes = originalBytes,
+                            qrBitmap = qrBitmap,
+                            qrPlacement = qrPlacement,
+                            signature = signature,
+                            outputFile = tempStampedFile
+                        )
+                    } else {
+                        stampPdfWithSignature(
+                            originalBytes = originalBytes,
+                            qrBitmap = qrBitmap,
+                            signature = signature,
+                            outputFile = tempStampedFile
+                        )
+                    }
+                }
+            }
+
+            val stampedBytes = tempStampedFile.readBytes()
+            val renderedDigest = integrityManager.computePdfRenderedPagesDigest(stampedBytes)
+
+            val placementMeta = qrPlacement?.let {
+                val norm = it.normalized()
+                PlacementMetaV4(
+                    pageIndex = norm.pageIndex,
+                    xRatio = norm.x.toDouble(),
+                    yRatio = norm.y.toDouble(),
+                    widthRatio = norm.width.toDouble(),
+                    heightRatio = norm.width.toDouble()
+                )
+            }
+
+            val manifest = integrityManager.buildManifest(
+                receiptId = receiptId,
+                documentFormat = DocumentFormatV4.PDF,
+                stampMode = stampMode,
+                originalDocSha256 = originalDocSha256,
+                issuerId = issuerId,
+                qrPlacement = placementMeta,
+                signatureMeta = signatureMeta,
+                injectedArtifacts = listOf(
+                    InjectedArtifactV4(
+                        type = InjectedArtifactType.METADATA_STREAM,
+                        identifier = "pdf_rendered_pages",
+                        digestSha256 = renderedDigest
+                    )
+                )
+            )
+
+            val finalBytes = integrityManager.embedManifestInPdfBytes(stampedBytes, manifest)
+            outputFile.parentFile?.mkdirs()
+            outputFile.writeBytes(finalBytes)
+            return manifest
+        } finally {
+            if (tempStampedFile.exists()) {
+                tempStampedFile.delete()
+            }
+        }
+    }
+
+    fun stampDocxV4(
+        originalBytes: ByteArray,
+        receiptId: String,
+        originalDocSha256: String,
+        issuerId: String,
+        stampMode: StampModeV4,
+        qrBitmap: Bitmap?,
+        qrPlacement: QrPlacement?,
+        signatureMeta: SignatureMetaV4?,
+        outputFile: File
+    ): IntegrityManifestV4 {
+        requireNotNull(qrBitmap) {
+            "DOCX RS_V4 manifest stamping currently requires a QR bitmap."
+        }
+
+        val entries = unzip(originalBytes)
+        val documentXml = entries["word/document.xml"]
+            ?: throw IllegalArgumentException("Invalid DOCX file: document.xml was not found.")
+
+        val relationshipPath = "word/_rels/document.xml.rels"
+        val relationshipsXml = entries[relationshipPath]
+            ?.toString(Charsets.UTF_8)
+            ?: """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>"""
+
+        val relationshipId = nextRelationshipId(relationshipsXml)
+        val qrPngBytes = bitmapToPng(qrBitmap)
+        val imagePath = RsV4IntegrityManager.DOCX_QR_ENTRY
+
+        entries[imagePath] = qrPngBytes
+        entries[relationshipPath] = addImageRelationship(
+            relationshipsXml,
+            relationshipId,
+            "media/receiptshield_qr.png"
+        ).toByteArray(Charsets.UTF_8)
+
+        addPngContentType(entries)
+
+        val documentText = documentXml.toString(Charsets.UTF_8)
+        if (!documentText.contains("</w:body>")) {
+            throw IllegalArgumentException("Invalid DOCX structure: document body was not found.")
+        }
+
+        val drawingParagraph = if (qrPlacement != null) {
+            val pageSize = getDocxPageSize(documentText)
+            val safe = qrPlacement.normalized()
+            val widthEmu = (pageSize.first * safe.width).toLong()
+            val heightEmu = widthEmu
+            val xEmu = (pageSize.first * safe.x).toLong()
+            val yEmu = (pageSize.second * safe.y).toLong()
+
+            if (xEmu + widthEmu > pageSize.first || yEmu + heightEmu > pageSize.second) {
+                throw IllegalArgumentException("QR code does not fit inside the DOCX page.")
+            }
+
+            createQrAnchoredDrawingParagraph(relationshipId, xEmu, yEmu, widthEmu, heightEmu)
+        } else {
+            createQrDrawingParagraph(relationshipId)
+        }
+
+        entries["word/document.xml"] = documentText.replace(
+            "</w:body>",
+            "$drawingParagraph</w:body>"
+        ).toByteArray(Charsets.UTF_8)
+
+        val placementMeta = qrPlacement?.let {
+            val norm = it.normalized()
+            PlacementMetaV4(
+                pageIndex = norm.pageIndex,
+                xRatio = norm.x.toDouble(),
+                yRatio = norm.y.toDouble(),
+                widthRatio = norm.width.toDouble(),
+                heightRatio = norm.width.toDouble()
+            )
+        }
+
+        val manifest = integrityManager.buildManifest(
+            receiptId = receiptId,
+            documentFormat = DocumentFormatV4.DOCX,
+            stampMode = stampMode,
+            originalDocSha256 = originalDocSha256,
+            issuerId = issuerId,
+            qrPlacement = placementMeta,
+            signatureMeta = signatureMeta,
+            injectedArtifacts = listOf(
+                InjectedArtifactV4(
+                    type = InjectedArtifactType.QR_IMAGE,
+                    identifier = imagePath,
+                    digestSha256 = securityManager.sha256Bytes(qrPngBytes)
+                ),
+                InjectedArtifactV4(
+                    type = InjectedArtifactType.RELATIONSHIP,
+                    identifier = relationshipPath,
+                    digestSha256 = securityManager.sha256Bytes(
+                        entries[relationshipPath] ?: ByteArray(0)
+                    )
+                ),
+                InjectedArtifactV4(
+                    type = InjectedArtifactType.CONTENT_TYPE,
+                    identifier = "[Content_Types].xml",
+                    digestSha256 = securityManager.sha256Bytes(
+                        entries["[Content_Types].xml"] ?: ByteArray(0)
+                    )
+                )
+            )
+        )
+
+        integrityManager.embedManifestInDocxEntries(entries, manifest)
+        writeDocx(entries, outputFile)
+        return manifest
     }
 
     // ---------------------------------------------------------
