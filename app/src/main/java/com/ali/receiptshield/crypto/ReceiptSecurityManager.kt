@@ -1,4 +1,3 @@
-
 package com.ali.receiptshield.crypto
 
 import android.graphics.Bitmap
@@ -14,123 +13,14 @@ import java.io.InputStream
 import java.security.MessageDigest
 import java.util.UUID
 
-data class ReceiptPayload(
-    val version: String,
-    val issuerId: String,
-    val timestamp: Long,
-    val fileHash: String,
-    val perceptualHash: String,
-    val nonce: String,
-    val publicKey: String = "",
-    val digitalSignature: String = ""
-) {
-
-    fun signingData(): String {
-        return listOf(
-            version,
-            issuerId,
-            timestamp.toString(),
-            fileHash,
-            perceptualHash,
-            nonce,
-            publicKey
-        ).joinToString("|")
-    }
-
-    fun serialize(): String {
-        return if (version == "RS_V3") {
-            listOf(
-                version,
-                issuerId,
-                timestamp.toString(),
-                fileHash,
-                perceptualHash,
-                nonce,
-                publicKey,
-                digitalSignature
-            ).joinToString("|")
-        } else {
-            listOf(
-                version,
-                issuerId,
-                timestamp.toString(),
-                fileHash,
-                perceptualHash,
-                nonce
-            ).joinToString("|")
-        }
-    }
-
-    companion object {
-
-        fun deserialize(raw: String): ReceiptPayload? {
-            return try {
-                val parts = raw.split("|")
-
-                when {
-                    parts.size == 8 && parts[0] == "RS_V3" -> {
-
-                        val timestamp = parts[2].toLong()
-
-                        if (
-                            parts[1].isBlank() ||
-                            parts[3].isBlank() ||
-                            parts[5].isBlank() ||
-                            parts[6].isBlank() ||
-                            parts[7].isBlank()
-                        ) {
-                            return null
-                        }
-
-                        ReceiptPayload(
-                            version = parts[0],
-                            issuerId = parts[1],
-                            timestamp = timestamp,
-                            fileHash = parts[3],
-                            perceptualHash = parts[4],
-                            nonce = parts[5],
-                            publicKey = parts[6],
-                            digitalSignature = parts[7]
-                        )
-                    }
-
-                    parts.size == 6 &&
-                        (parts[0] == "RS_V2" || parts[0] == "RS_V1") -> {
-
-                        val version = parts[0]
-                        val timestamp = parts[2].toLong()
-
-                        ReceiptPayload(
-                            version = version,
-                            issuerId = parts[1],
-                            timestamp = timestamp,
-                            fileHash = parts[3],
-                            perceptualHash = if (version == "RS_V2") {
-                                parts[4]
-                            } else {
-                                ""
-                            },
-                            nonce = if (version == "RS_V2") {
-                                parts[5]
-                            } else {
-                                parts[4]
-                            }
-                        )
-                    }
-
-                    else -> null
-                }
-
-            } catch (_: Exception) {
-                null
-            }
-        }
-    }
-}
-
 class ReceiptSecurityManager(
     private val keyManager: ReceiptKeyManager = ReceiptKeyManager()
 ) {
+
+    fun sha256Bytes(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        return digest.digest(bytes).joinToString("") { "%02x".format(it) }
+    }
 
     fun hashInputStream(input: InputStream): String {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -146,6 +36,10 @@ class ReceiptSecurityManager(
         return digest.digest().joinToString("") {
             "%02x".format(it)
         }
+    }
+
+    fun computeManifestSha256(manifest: IntegrityManifestV4): String {
+        return sha256Bytes(manifest.toCanonicalBytes())
     }
 
     fun computePerceptualHash(bitmap: Bitmap): String {
@@ -247,49 +141,67 @@ class ReceiptSecurityManager(
         return distance <= tolerance
     }
 
-    fun createStamp(
-        liveHash: String,
-        pHash: String,
-        issuerId: String
-    ): ReceiptPayload {
+    fun createStampV4(
+        receiptId: String = UUID.randomUUID().toString(),
+        documentFormat: DocumentFormatV4,
+        originalDocSha256: String,
+        manifestSha256: String,
+        issuerId: String,
+        qrPlacement: PlacementMetaV4? = null,
+        signatureMeta: SignatureMetaV4? = null,
+        timestampMillis: Long = System.currentTimeMillis(),
+        nonce: String = UUID.randomUUID().toString().replace("-", "").take(16)
+    ): ReceiptPayloadV4 {
 
-        val safeIssuerId = issuerId
-            .replace("|", "_")
-            .trim()
-            .ifEmpty { "UNKNOWN" }
-
+        val safeIssuerId = issuerId.trim().ifEmpty { "UNKNOWN" }
         val publicKey = keyManager.getPublicKeyBase64()
 
-        val unsignedPayload = ReceiptPayload(
-            version = "RS_V3",
+        val unsignedPayload = ReceiptPayloadV4(
+            version = RECEIPT_VERSION_V4,
+            receiptId = receiptId.trim().ifEmpty { UUID.randomUUID().toString() },
+            documentFormat = documentFormat,
+            originalDocSha256 = originalDocSha256.lowercase().trim(),
+            manifestSha256 = manifestSha256.lowercase().trim(),
             issuerId = safeIssuerId,
-            timestamp = System.currentTimeMillis(),
-            fileHash = liveHash,
-            perceptualHash = pHash,
-            nonce = UUID.randomUUID().toString().substring(0, 8),
-            publicKey = publicKey
+            timestampMillis = timestampMillis,
+            nonce = nonce.trim(),
+            qrPlacement = qrPlacement,
+            signatureMeta = signatureMeta,
+            publicKeyBase64 = publicKey,
+            digitalSignatureBase64 = ""
         )
 
-        val signature = keyManager.sign(
-            unsignedPayload.signingData()
-        )
+        val canonicalBytes = unsignedPayload.toCanonicalSigningBytes()
+        val signature = keyManager.sign(String(canonicalBytes, Charsets.UTF_8))
 
         return unsignedPayload.copy(
-            digitalSignature = signature
+            digitalSignatureBase64 = signature
         )
     }
 
-    fun verifyPayloadSignature(payload: ReceiptPayload): Boolean {
-
-        if (payload.version != "RS_V3") {
+    fun verifyPayloadSignatureV4(payload: ReceiptPayloadV4): Boolean {
+        if (payload.version != RECEIPT_VERSION_V4) {
+            return false
+        }
+        if (payload.digitalSignatureBase64.isBlank() || payload.publicKeyBase64.isBlank()) {
             return false
         }
 
+        val canonicalData = String(payload.toCanonicalSigningBytes(), Charsets.UTF_8)
         return keyManager.verify(
-            data = payload.signingData(),
-            signatureBase64 = payload.digitalSignature,
-            publicKeyBase64 = payload.publicKey
+            data = canonicalData,
+            signatureBase64 = payload.digitalSignatureBase64,
+            publicKeyBase64 = payload.publicKeyBase64
         )
+    }
+
+    fun parseAndVerifyQrPayloadV4(rawQrText: String): ReceiptPayloadV4? {
+        return try {
+            val payload = ReceiptPayloadV4.fromQrJsonString(rawQrText)
+            if (verifyPayloadSignatureV4(payload)) payload else null
+        } catch (_: Exception) {
+            null
+        }
     }
 
     fun generateQRCodeBitmap(
