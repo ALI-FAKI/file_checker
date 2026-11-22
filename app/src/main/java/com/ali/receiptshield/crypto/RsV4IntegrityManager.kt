@@ -214,7 +214,6 @@ class RsV4IntegrityManager(
                 if (expectedArtifact != null) {
                     expectedArtifact.digestSha256.equals(renderedDigest, ignoreCase = true)
                 } else {
-                    // Fallback structural check if PDF was stamped via legacy path without rendered page artifact
                     manifest.originalDocSha256.isNotBlank() && renderedDigest.isNotBlank()
                 }
             }
@@ -256,7 +255,6 @@ class RsV4IntegrityManager(
             val entries = unzipEntries(docxBytes)
             if (!entries.containsKey("word/document.xml")) return false
 
-            // Verify every recorded injected artifact exists and matches its authenticated SHA-256
             val injectedNames = mutableSetOf(DOCX_MANIFEST_ENTRY)
             for (artifact in manifest.injectedArtifacts) {
                 when (artifact.type) {
@@ -277,7 +275,6 @@ class RsV4IntegrityManager(
                 }
             }
 
-            // Reconstruct original package entries by removing only recognized injected parts
             val reconstructed = LinkedHashMap<String, ByteArray>()
             for ((name, bytes) in entries) {
                 if (name in injectedNames || name == DOCX_MANIFEST_ENTRY) continue
@@ -298,8 +295,9 @@ class RsV4IntegrityManager(
                 }
             }
 
-            val canonicalOriginalDigest = computeCanonicalZipDigest(reconstructed)
-            canonicalOriginalDigest.equals(manifest.originalDocSha256, ignoreCase = true)
+            val strippedDocxBytes = zipEntriesToBytes(reconstructed)
+            val strippedDigest = sha256(strippedDocxBytes)
+            strippedDigest.equals(manifest.originalDocSha256, ignoreCase = true)
         } catch (_: Exception) {
             false
         }
@@ -312,7 +310,23 @@ class RsV4IntegrityManager(
         val bitmap: Bitmap = BitmapFactory.decodeByteArray(cleanImageBytes, 0, cleanImageBytes.size)
             ?: return false
         return try {
-            bitmap.width > 0 && bitmap.height > 0 && manifest.originalDocSha256.isNotBlank()
+            if (bitmap.width <= 0 || bitmap.height <= 0 || manifest.originalDocSha256.isBlank()) {
+                return false
+            }
+
+            val expectedStampedArtifact = manifest.injectedArtifacts.firstOrNull {
+                it.type == InjectedArtifactType.METADATA_STREAM &&
+                    (it.identifier == "image_stamped_png" ||
+                        it.identifier == "image_qr_stamped_png" ||
+                        it.identifier == "image_signature_stamped_png")
+            }
+
+            if (expectedStampedArtifact != null) {
+                val actualDigest = sha256(cleanImageBytes)
+                actualDigest.equals(expectedStampedArtifact.digestSha256, ignoreCase = true)
+            } else {
+                true
+            }
         } finally {
             bitmap.recycle()
         }
@@ -321,16 +335,6 @@ class RsV4IntegrityManager(
     // ---------------------------------------------------------
     // INTERNAL CANONICALIZATION HELPERS
     // ---------------------------------------------------------
-
-    private fun computeCanonicalZipDigest(entries: Map<String, ByteArray>): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        for (entryName in entries.keys.sorted()) {
-            val content = entries[entryName] ?: continue
-            val entryDigest = sha256(content)
-            digest.update("$entryName:$entryDigest\n".toByteArray(Charsets.UTF_8))
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
-    }
 
     private fun cleanRelationshipsXml(
         xmlBytes: ByteArray,
@@ -341,6 +345,8 @@ class RsV4IntegrityManager(
             .map { it.identifier.removePrefix("word/") }
             .toSet()
 
+        if (targetPaths.isEmpty()) return xmlBytes
+
         val doc = parseXml(xmlBytes)
         val root = doc.documentElement
         val children = root.childNodes
@@ -349,11 +355,8 @@ class RsV4IntegrityManager(
             val node = children.item(i)
             if (node is Element && node.tagName.endsWith("Relationship")) {
                 val target = node.getAttribute("Target")
-                val docPrName = node.getAttribute("Id")
-                if (target in targetPaths || docPrName.isBlank()) {
-                    if (target in targetPaths) {
-                        toRemove.add(node)
-                    }
+                if (target in targetPaths) {
+                    toRemove.add(node)
                 }
             }
         }
@@ -368,7 +371,11 @@ class RsV4IntegrityManager(
         artifacts: List<InjectedArtifactV4>
     ): ByteArray {
         val injectedPartNames = artifacts
-            .filter { it.type == InjectedArtifactType.QR_IMAGE || it.type == InjectedArtifactType.SIGNATURE_IMAGE || it.type == InjectedArtifactType.MANIFEST }
+            .filter {
+                it.type == InjectedArtifactType.QR_IMAGE ||
+                    it.type == InjectedArtifactType.SIGNATURE_IMAGE ||
+                    it.type == InjectedArtifactType.MANIFEST
+            }
             .map { "/${it.identifier.removePrefix("/")}" }
             .toSet()
 
@@ -456,6 +463,18 @@ class RsV4IntegrityManager(
             }
         }
         return entries
+    }
+
+    private fun zipEntriesToBytes(entries: Map<String, ByteArray>): ByteArray {
+        val out = ByteArrayOutputStream()
+        ZipOutputStream(out).use { zip ->
+            for ((name, bytes) in entries) {
+                zip.putNextEntry(ZipEntry(name))
+                zip.write(bytes)
+                zip.closeEntry()
+            }
+        }
+        return out.toByteArray()
     }
 
     fun zipEntries(entries: Map<String, ByteArray>, outputFile: File) {
