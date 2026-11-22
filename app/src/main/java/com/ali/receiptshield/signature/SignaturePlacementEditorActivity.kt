@@ -11,13 +11,13 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.view.Gravity
+import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.ali.receiptshield.R
 import java.io.File
 
 class SignaturePlacementEditorActivity : AppCompatActivity() {
@@ -34,6 +34,7 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
 
     private lateinit var editorView: SignaturePlacementEditorView
     private lateinit var pageLabel: TextView
+    private lateinit var navigation: LinearLayout
 
     private var documentUri: Uri? = null
     private var signatureBitmap: Bitmap? = null
@@ -43,6 +44,8 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
     private var pdfRenderer: PdfRenderer? = null
 
     private var currentPage = 0
+    private var totalPages = 1
+    private var isPdf = false
 
     private var placement = SignaturePlacement()
 
@@ -74,14 +77,31 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
         }
 
         try {
-            openPdf()
+            isPdf = isPdfDocument(documentUri!!)
+
             createInterface()
-            renderCurrentPage()
+
+            if (isPdf) {
+                openPdf()
+                renderCurrentPage()
+            } else {
+                openImage()
+            }
+
         } catch (e: Exception) {
             finishWithError(
-                "Could not open PDF: ${e.message}"
+                "Could not open document: ${e.message}"
             )
         }
+    }
+
+    private fun isPdfDocument(uri: Uri): Boolean {
+        val mimeType = contentResolver.getType(uri).orEmpty()
+
+        return mimeType.equals("application/pdf", true) ||
+            uri.toString().substringBefore("?")
+                .lowercase()
+                .endsWith(".pdf")
     }
 
     private fun openPdf() {
@@ -93,6 +113,41 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
                 ?: throw IllegalStateException("Cannot open PDF")
 
         pdfRenderer = PdfRenderer(fileDescriptor!!)
+
+        totalPages = pdfRenderer!!.pageCount
+
+        if (totalPages <= 0) {
+            throw IllegalStateException("PDF has no pages")
+        }
+    }
+
+    private fun openImage() {
+        val uri = documentUri
+            ?: throw IllegalStateException("Missing image URI")
+
+        val bitmap = contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it)
+        } ?: throw IllegalStateException("Cannot read image")
+
+        pageBitmap?.recycle()
+        pageBitmap = bitmap
+
+        totalPages = 1
+        currentPage = 0
+
+        editorView.setPagePreview(bitmap)
+
+        signatureBitmap?.let {
+            editorView.setSignature(it)
+        }
+
+        placement = placement.copy(pageIndex = 0).normalized()
+
+        editorView.setPageIndex(0)
+        editorView.setPlacement(placement)
+
+        navigation.visibility = View.GONE
+        pageLabel.visibility = View.GONE
     }
 
     private fun createInterface() {
@@ -127,7 +182,7 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
             1f
         )
 
-        val navigation = LinearLayout(this).apply {
+        navigation = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
@@ -153,9 +208,7 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
             text = "Next"
             isAllCaps = false
             setOnClickListener {
-                val count = pdfRenderer?.pageCount ?: 0
-
-                if (currentPage < count - 1) {
+                if (currentPage < totalPages - 1) {
                     currentPage++
                     renderCurrentPage()
                 }
@@ -186,7 +239,12 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
 
         val sizeSeekBar = SeekBar(this).apply {
             max = 100
-            progress = 20
+
+            progress = (
+                (placement.width - SignaturePlacement.MIN_WIDTH) /
+                    (SignaturePlacement.MAX_WIDTH -
+                        SignaturePlacement.MIN_WIDTH) * 100f
+                ).toInt().coerceIn(0, 100)
 
             setOnSeekBarChangeListener(
                 object : SeekBar.OnSeekBarChangeListener {
@@ -200,11 +258,11 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
 
                         val width =
                             SignaturePlacement.MIN_WIDTH +
-                            (progress / 100f) *
-                            (
-                                SignaturePlacement.MAX_WIDTH -
-                                SignaturePlacement.MIN_WIDTH
-                            )
+                                (progress / 100f) *
+                                (
+                                    SignaturePlacement.MAX_WIDTH -
+                                        SignaturePlacement.MIN_WIDTH
+                                    )
 
                         placement = placement.copy(
                             width = width
@@ -237,8 +295,10 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
         root.addView(instruction)
         root.addView(editorView, previewParams)
         root.addView(navigation)
+        root.addView(pageLabel)
         root.addView(sizeLabel)
         root.addView(sizeSeekBar)
+
         root.addView(
             applyButton,
             LinearLayout.LayoutParams(
@@ -255,25 +315,31 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
         val renderer = pdfRenderer ?: return
         val signature = signatureBitmap ?: return
 
+        if (currentPage !in 0 until renderer.pageCount) {
+            return
+        }
+
         try {
             val page = renderer.openPage(currentPage)
 
-            val bitmap = Bitmap.createBitmap(
-                page.width,
-                page.height,
-                Bitmap.Config.ARGB_8888
-            )
+            val bitmap = try {
+                Bitmap.createBitmap(
+                    page.width,
+                    page.height,
+                    Bitmap.Config.ARGB_8888
+                ).also {
+                    it.eraseColor(Color.WHITE)
 
-            bitmap.eraseColor(Color.WHITE)
-
-            page.render(
-                bitmap,
-                null,
-                null,
-                PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY
-            )
-
-            page.close()
+                    page.render(
+                        it,
+                        null,
+                        null,
+                        PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY
+                    )
+                }
+            } finally {
+                page.close()
+            }
 
             pageBitmap?.recycle()
             pageBitmap = bitmap
@@ -287,10 +353,8 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
             editorView.setPlacement(placement)
             editorView.setPageIndex(currentPage)
 
-            val pageCount = renderer.pageCount
-
             pageLabel.text =
-                "Page ${currentPage + 1} of $pageCount"
+                "Page ${currentPage + 1} of $totalPages"
 
         } catch (e: Exception) {
             Toast.makeText(
@@ -304,7 +368,9 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
     private fun returnPlacement() {
 
         placement = editorView.getPlacement()
-            .copy(pageIndex = currentPage)
+            .copy(
+                pageIndex = if (isPdf) currentPage else 0
+            )
             .normalized()
 
         val result = Intent().apply {
@@ -332,7 +398,7 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
     private fun dp(value: Int): Int {
         return (
             value * resources.displayMetrics.density
-        ).toInt()
+            ).toInt()
     }
 
     override fun onDestroy() {
