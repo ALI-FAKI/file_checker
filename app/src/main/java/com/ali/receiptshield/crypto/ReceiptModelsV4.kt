@@ -1,185 +1,110 @@
 package com.ali.receiptshield.crypto
 
-import org.json.JSONArray
 import org.json.JSONObject
 
-// The Version Constant
 const val RECEIPT_VERSION_V4 = "RS_V4"
 
-enum class DocumentFormatV4 {
-    PDF, DOCX, IMAGE, UNKNOWN
+enum class DocumentFormatV4(val wireName: String) {
+    PDF("PDF"), DOCX("DOCX"), PNG("PNG"), JPG("JPG"), JPEG("JPEG"), WEBP("WEBP"), BMP("BMP"), UNKNOWN("UNKNOWN");
+
+    companion object {
+        fun fromFileNameOrMime(fileName: String, mimeType: String?): DocumentFormatV4? {
+            val name = fileName.lowercase()
+            val mime = mimeType?.lowercase() ?: ""
+            return when {
+                name.endsWith(".pdf") || mime.contains("pdf") -> PDF
+                name.endsWith(".docx") || mime.contains("wordprocessingml") -> DOCX
+                name.endsWith(".png") || mime.contains("png") -> PNG
+                name.endsWith(".jpg") || mime.contains("jpeg") -> JPG
+                name.endsWith(".jpeg") -> JPEG
+                name.endsWith(".webp") || mime.contains("webp") -> WEBP
+                name.endsWith(".bmp") || mime.contains("bmp") -> BMP
+                else -> null
+            }
+        }
+    }
 }
 
 enum class StampModeV4 {
-    EMBEDDED,   // QR is printed onto the document
-    DETACHED    // QR is a separate image file
-}
-
-enum class InjectedArtifactType {
-    QR_CODE,
-    MANIFEST,
-    SIGNATURE
+    EMBEDDED, DETACHED, SIGNATURE_ONLY
 }
 
 enum class VerificationStatus {
-    AUTHENTIC,
-    RECOMPRESSED,
-    TAMPERED,
-    ERROR
+    VERIFIED,
+    UNSUPPORTED_OR_CORRUPTED_FILE,
+    INTEGRITY_MANIFEST_MISSING_OR_INVALID,
+    SIGNATURE_ONLY_NO_CRYPTO_PROOF,
+    INVALID_DIGITAL_SIGNATURE,
+    QR_DOES_NOT_BELONG_TO_DOCUMENT,
+    DOCUMENT_TAMPERED,
+    SIGNATURE_VALID_ISSUER_UNTRUSTED
 }
 
-data class PlacementMetaV4(
-    val page: Int,
-    val x: Float,
-    val y: Float,
-    val width: Float,
-    val height: Float
-)
-
-data class SignatureMetaV4(
-    val algorithm: String, // e.g., "Ed25519"
-    val keyId: String,
-    val signatureBase64: String
-)
-
-data class InjectedArtifactV4(
-    val type: InjectedArtifactType,
-    val pathInsideDocument: String, // e.g., "word/media/qr.png"
-    val hash: String
-)
-
 data class IntegrityManifestV4(
+    val version: String = RECEIPT_VERSION_V4,
+    val receiptId: String,
+    val createdAtMillis: Long,
+    val stampMode: StampModeV4,
     val originalFileHash: String,
-    val originalPerceptualHash: String,
-    val injectedArtifacts: List<InjectedArtifactV4>
+    val originalPerceptualHash: String
 )
 
 data class ReceiptPayloadV4(
     val version: String = RECEIPT_VERSION_V4,
+    val receiptId: String,
     val issuerId: String,
-    val timestamp: Long,
-    val nonce: String,
-    val format: DocumentFormatV4,
+    val publicKeyBase64: String,
+    val timestampMillis: Long,
+    val documentFormat: DocumentFormatV4,
     val stampMode: StampModeV4,
-    val manifest: IntegrityManifestV4,
-    val placementMeta: PlacementMetaV4?,
-    val signatureMeta: SignatureMetaV4?
+    val integrityManifest: IntegrityManifestV4,
+    val signatureBase64: String
 ) {
-    
-    // FIX: Proper JSON serialization so no data is lost
     fun serialize(): String {
-        val json = JSONObject()
-        json.put("version", version)
-        json.put("issuerId", issuerId)
-        json.put("timestamp", timestamp)
-        json.put("nonce", nonce)
-        json.put("format", format.name)
-        json.put("stampMode", stampMode.name)
-
-        // Serialize Manifest
-        val manifestJson = JSONObject().apply {
-            put("originalFileHash", manifest.originalFileHash)
-            put("originalPerceptualHash", manifest.originalPerceptualHash)
-            
-            val artifactsArray = JSONArray()
-            for (artifact in manifest.injectedArtifacts) {
-                val artifactJson = JSONObject().apply {
-                    put("type", artifact.type.name)
-                    put("pathInsideDocument", artifact.pathInsideDocument)
-                    put("hash", artifact.hash)
-                }
-                artifactsArray.put(artifactJson)
-            }
-            put("injectedArtifacts", artifactsArray)
-        }
-        json.put("manifest", manifestJson)
-
-        // Serialize Placement Meta (Optional)
-        placementMeta?.let {
-            json.put("placementMeta", JSONObject().apply {
-                put("page", it.page)
-                put("x", it.x.toDouble())
-                put("y", it.y.toDouble())
-                put("width", it.width.toDouble())
-                put("height", it.height.toDouble())
+        return JSONObject().apply {
+            put("version", version)
+            put("receiptId", receiptId)
+            put("issuerId", issuerId)
+            put("publicKeyBase64", publicKeyBase64)
+            put("timestampMillis", timestampMillis)
+            put("documentFormat", documentFormat.name)
+            put("stampMode", stampMode.name)
+            put("signatureBase64", signatureBase64)
+            put("integrityManifest", JSONObject().apply {
+                put("version", integrityManifest.version)
+                put("receiptId", integrityManifest.receiptId)
+                put("createdAtMillis", integrityManifest.createdAtMillis)
+                put("stampMode", integrityManifest.stampMode.name)
+                put("originalFileHash", integrityManifest.originalFileHash)
+                put("originalPerceptualHash", integrityManifest.originalPerceptualHash)
             })
-        }
-
-        // Serialize Signature Meta (Optional)
-        signatureMeta?.let {
-            json.put("signatureMeta", JSONObject().apply {
-                put("algorithm", it.algorithm)
-                put("keyId", it.keyId)
-                put("signatureBase64", it.signatureBase64)
-            })
-        }
-
-        return json.toString()
+        }.toString()
     }
 
     companion object {
-        // FIX: Added missing deserialize function
-        fun deserialize(raw: String): ReceiptPayloadV4? {
+        fun fromQrJsonString(raw: String): ReceiptPayloadV4? {
             return try {
                 val json = JSONObject(raw)
-                
-                // Parse Manifest
-                val manifestJson = json.getJSONObject("manifest")
-                val artifactsArray = manifestJson.getJSONArray("injectedArtifacts")
-                val artifactsList = mutableListOf<InjectedArtifactV4>()
-                
-                for (i in 0 until artifactsArray.length()) {
-                    val a = artifactsArray.getJSONObject(i)
-                    artifactsList.add(
-                        InjectedArtifactV4(
-                            type = InjectedArtifactType.valueOf(a.getString("type")),
-                            pathInsideDocument = a.getString("pathInsideDocument"),
-                            hash = a.getString("hash")
-                        )
-                    )
-                }
-
-                val manifest = IntegrityManifestV4(
-                    originalFileHash = manifestJson.getString("originalFileHash"),
-                    originalPerceptualHash = manifestJson.getString("originalPerceptualHash"),
-                    injectedArtifacts = artifactsList
-                )
-
-                // Parse Placement Meta (Optional)
-                val placementMeta = if (json.has("placementMeta")) {
-                    val p = json.getJSONObject("placementMeta")
-                    PlacementMetaV4(
-                        page = p.getInt("page"),
-                        x = p.getDouble("x").toFloat(),
-                        y = p.getDouble("y").toFloat(),
-                        width = p.getDouble("width").toFloat(),
-                        height = p.getDouble("height").toFloat()
-                    )
-                } else null
-
-                // Parse Signature Meta (Optional)
-                val signatureMeta = if (json.has("signatureMeta")) {
-                    val s = json.getJSONObject("signatureMeta")
-                    SignatureMetaV4(
-                        algorithm = s.getString("algorithm"),
-                        keyId = s.getString("keyId"),
-                        signatureBase64 = s.getString("signatureBase64")
-                    )
-                } else null
-
+                val manifestJson = json.getJSONObject("integrityManifest")
                 ReceiptPayloadV4(
                     version = json.getString("version"),
+                    receiptId = json.getString("receiptId"),
                     issuerId = json.getString("issuerId"),
-                    timestamp = json.getLong("timestamp"),
-                    nonce = json.getString("nonce"),
-                    format = DocumentFormatV4.valueOf(json.getString("format")),
+                    publicKeyBase64 = json.getString("publicKeyBase64"),
+                    timestampMillis = json.getLong("timestampMillis"),
+                    documentFormat = DocumentFormatV4.valueOf(json.getString("documentFormat")),
                     stampMode = StampModeV4.valueOf(json.getString("stampMode")),
-                    manifest = manifest,
-                    placementMeta = placementMeta,
-                    signatureMeta = signatureMeta
+                    signatureBase64 = json.getString("signatureBase64"),
+                    integrityManifest = IntegrityManifestV4(
+                        version = manifestJson.getString("version"),
+                        receiptId = manifestJson.getString("receiptId"),
+                        createdAtMillis = manifestJson.getLong("createdAtMillis"),
+                        stampMode = StampModeV4.valueOf(manifestJson.getString("stampMode")),
+                        originalFileHash = manifestJson.getString("originalFileHash"),
+                        originalPerceptualHash = manifestJson.getString("originalPerceptualHash")
+                    )
                 )
             } catch (e: Exception) {
-                e.printStackTrace()
                 null
             }
         }
