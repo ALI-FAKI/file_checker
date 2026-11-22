@@ -1,13 +1,18 @@
-
 package com.ali.receiptshield.verification
 
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.net.Uri
-import com.ali.receiptshield.crypto.ReceiptPayload
+import com.ali.receiptshield.crypto.DocumentFormatV4
+import com.ali.receiptshield.crypto.IntegrityManifestV4
+import com.ali.receiptshield.crypto.RECEIPT_VERSION_V4
+import com.ali.receiptshield.crypto.ReceiptPayloadV4
 import com.ali.receiptshield.crypto.ReceiptSecurityManager
+import com.ali.receiptshield.crypto.RsV4IntegrityManager
+import com.ali.receiptshield.crypto.StampModeV4
 import com.ali.receiptshield.crypto.TrustedIssuerRegistry
+import com.ali.receiptshield.crypto.VerificationStatus
 import com.ali.receiptshield.files.DocumentStampHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -19,14 +24,16 @@ data class VerificationOutcome(
     val title: String,
     val message: String,
     val color: Int,
-    val isVerified: Boolean
+    val isVerified: Boolean,
+    val status: VerificationStatus = VerificationStatus.UNSUPPORTED_OR_CORRUPTED_FILE
 )
 
 class VerificationHelper(
     private val context: Context,
     private val securityManager: ReceiptSecurityManager,
     private val dateFormatter: SimpleDateFormat,
-    private val documentStampHelper: DocumentStampHelper
+    private val documentStampHelper: DocumentStampHelper,
+    private val integrityManager: RsV4IntegrityManager = RsV4IntegrityManager(securityManager)
 ) {
 
     private val trustedIssuerRegistry =
@@ -36,49 +43,117 @@ class VerificationHelper(
         fileUri: Uri,
         fileName: String
     ): VerificationOutcome = withContext(Dispatchers.IO) {
-
         try {
             val fileBytes = readFile(fileUri)
-
             if (fileBytes.isEmpty()) {
-                return@withContext failure(
-                    "The selected file is empty."
+                return@withContext outcome(
+                    status = VerificationStatus.UNSUPPORTED_OR_CORRUPTED_FILE,
+                    title = "UNSUPPORTED OR CORRUPTED FILE",
+                    message = "The selected file is empty.",
+                    color = Color.rgb(198, 40, 40),
+                    isVerified = false
                 )
             }
 
-            val extension = fileName
-                .substringAfterLast('.', "")
-                .lowercase()
+            val mimeType = context.contentResolver.getType(fileUri)
+            val format = DocumentFormatV4.fromFileNameOrMime(fileName, mimeType)
 
-            val qrContent: String? = when (extension) {
+            if (fileName.lowercase().endsWith(".doc")) {
+                return@withContext outcome(
+                    status = VerificationStatus.UNSUPPORTED_OR_CORRUPTED_FILE,
+                    title = "UNSUPPORTED OR CORRUPTED FILE",
+                    message = "Legacy DOC files are not supported. Please use DOCX.",
+                    color = Color.rgb(198, 40, 40),
+                    isVerified = false
+                )
+            }
 
-                "pdf" -> {
-                    documentStampHelper.extractQrFromPdf(fileBytes)
+            if (format == null) {
+                return@withContext outcome(
+                    status = VerificationStatus.UNSUPPORTED_OR_CORRUPTED_FILE,
+                    title = "UNSUPPORTED OR CORRUPTED FILE",
+                    message = "Unsupported file format for file: $fileName",
+                    color = Color.rgb(198, 40, 40),
+                    isVerified = false
+                )
+            }
+
+            // 1. Extract embedded RS_V4 Integrity Manifest & clean content when applicable
+            var cleanImageBytesForCheck: ByteArray? = null
+            val manifest: IntegrityManifestV4? = when (format) {
+                DocumentFormatV4.PDF -> integrityManager.extractManifestFromPdfBytes(fileBytes)
+                DocumentFormatV4.DOCX -> integrityManager.extractManifestFromDocxBytes(fileBytes)
+                DocumentFormatV4.PNG,
+                DocumentFormatV4.JPG,
+                DocumentFormatV4.JPEG,
+                DocumentFormatV4.WEBP,
+                DocumentFormatV4.BMP -> {
+                    val extracted = integrityManager.extractManifestAndCleanImageBytes(fileBytes)
+                    cleanImageBytesForCheck = extracted?.first
+                    extracted?.second
                 }
+            }
 
-                "docx" -> {
-                    documentStampHelper.extractQrFromDocx(fileBytes)
-                }
+            if (manifest == null || manifest.version != RECEIPT_VERSION_V4) {
+                return@withContext outcome(
+                    status = VerificationStatus.INTEGRITY_MANIFEST_MISSING_OR_INVALID,
+                    title = "INTEGRITY MANIFEST MISSING OR INVALID",
+                    message = """
+                        No valid $RECEIPT_VERSION_V4 integrity manifest was found in this file.
 
-                "doc" -> {
-                    return@withContext failure(
-                        "Legacy DOC files are not supported. Please convert to DOCX."
-                    )
-                }
+                        File: $fileName
 
-                else -> {
-                    val bitmap = BitmapFactory.decodeByteArray(
-                        fileBytes,
-                        0,
-                        fileBytes.size
-                    )
+                        Legacy receipt versions (RS_V1–RS_V3) and unsigned/unmanifested files
+                        are not accepted under $RECEIPT_VERSION_V4.
 
-                    if (bitmap == null) {
-                        return@withContext failure(
-                            "Unsupported file format."
+                        RESULT: NOT VERIFIED.
+                    """.trimIndent(),
+                    color = Color.rgb(198, 40, 40),
+                    isVerified = false
+                )
+            }
+
+            // Handle signature-only mode explicitly: visual signature is not cryptographic proof
+            if (manifest.stampMode == StampModeV4.SIGNATURE_ONLY) {
+                val issueDate = formatDate(manifest.createdAtMillis)
+                return@withContext outcome(
+                    status = VerificationStatus.SIGNATURE_ONLY_NO_CRYPTO_PROOF,
+                    title = "SIGNATURE-ONLY — NO CRYPTOGRAPHIC PROOF",
+                    message = """
+                        This document was stamped in SIGNATURE-ONLY mode.
+
+                        File: $fileName
+                        Manifest Receipt ID: ${manifest.receiptId}
+                        Recorded date: $issueDate
+
+                        A visible signature image alone does not provide a cryptographic
+                        digital signature or verified issuer identity.
+
+                        RESULT: NOT CRYPTOGRAPHICALLY VERIFIED.
+                    """.trimIndent(),
+                    color = Color.rgb(245, 124, 0),
+                    isVerified = false
+                )
+            }
+
+            // 2. Extract and parse QR payload for QR-bearing modes
+            val qrContent: String? = when (format) {
+                DocumentFormatV4.PDF -> documentStampHelper.extractQrFromPdf(fileBytes)
+                DocumentFormatV4.DOCX -> documentStampHelper.extractQrFromDocx(fileBytes)
+                DocumentFormatV4.PNG,
+                DocumentFormatV4.JPG,
+                DocumentFormatV4.JPEG,
+                DocumentFormatV4.WEBP,
+                DocumentFormatV4.BMP -> {
+                    val bytesToDecode = cleanImageBytesForCheck ?: fileBytes
+                    val bitmap = BitmapFactory.decodeByteArray(bytesToDecode, 0, bytesToDecode.size)
+                        ?: return@withContext outcome(
+                            status = VerificationStatus.UNSUPPORTED_OR_CORRUPTED_FILE,
+                            title = "UNSUPPORTED OR CORRUPTED FILE",
+                            message = "Unable to decode image bytes for file: $fileName",
+                            color = Color.rgb(198, 40, 40),
+                            isVerified = false
                         )
-                    }
-
                     try {
                         securityManager.decodeQRCode(bitmap)
                     } finally {
@@ -88,174 +163,207 @@ class VerificationHelper(
             }
 
             if (qrContent.isNullOrBlank()) {
-                return@withContext failure(
-                    "No ReceiptShield QR code was found in this file."
-                )
-            }
-
-            val payload = ReceiptPayload.deserialize(qrContent)
-                ?: return@withContext failure(
-                    "A QR code was found, but its ReceiptShield data is invalid."
-                )
-
-            val issueDate = synchronized(dateFormatter) {
-                dateFormatter.format(Date(payload.timestamp))
-            }
-
-            // Legacy stamps do not contain digital signatures.
-            if (payload.version != "RS_V3") {
-                return@withContext VerificationOutcome(
-                    title = "LEGACY STAMP — NOT AUTHENTICATED",
-                    message = """
-                        A legacy ReceiptShield stamp was detected.
-
-                        File: $fileName
-
-                        Issuer ID: ${payload.issuerId}
-
-                        Recorded issue date: $issueDate
-
-                        SECURITY NOTICE:
-
-                        This stamp does not contain a cryptographic
-                        digital signature.
-
-                        ReceiptShield cannot authenticate the issuer
-                        or establish whether the document was modified.
-
-                        RESULT: NOT VERIFIED.
-                    """.trimIndent(),
-                    color = Color.rgb(245, 124, 0),
+                return@withContext outcome(
+                    status = VerificationStatus.INTEGRITY_MANIFEST_MISSING_OR_INVALID,
+                    title = "INTEGRITY MANIFEST MISSING OR INVALID",
+                    message = "No $RECEIPT_VERSION_V4 QR code payload could be decoded from $fileName.",
+                    color = Color.rgb(198, 40, 40),
                     isVerified = false
                 )
             }
 
-            // First verify the cryptographic signature.
-            val signatureValid =
-                securityManager.verifyPayloadSignature(payload)
-
-            if (!signatureValid) {
-                return@withContext failure(
-                    """
-                    INVALID DIGITAL SIGNATURE
-
-                    File: $fileName
-
-                    Issuer ID: ${payload.issuerId}
-
-                    Recorded issue date: $issueDate
-
-                    The digital signature does not match
-                    the signed QR payload.
-
-                    The QR data may have been modified,
-                    corrupted, or signed using another private key.
-
-                    RESULT: VERIFICATION FAILED.
-                    """.trimIndent()
+            val payload: ReceiptPayloadV4 = try {
+                ReceiptPayloadV4.fromQrJsonString(qrContent)
+            } catch (_: Exception) {
+                return@withContext outcome(
+                    status = VerificationStatus.INVALID_DIGITAL_SIGNATURE,
+                    title = "INVALID DIGITAL SIGNATURE",
+                    message = "QR payload is not a valid $RECEIPT_VERSION_V4 payload.",
+                    color = Color.rgb(198, 40, 40),
+                    isVerified = false
                 )
             }
 
-            // Then check whether the exact issuer ID and public key
-            // are registered in the trusted local issuer registry.
-            val issuerTrusted =
-                trustedIssuerRegistry.isTrusted(payload)
+            val issueDate = formatDate(payload.timestampMillis)
 
+            // 3. Verify QR digital signature over all canonical RS_V4 fields
+            if (!securityManager.verifyPayloadSignatureV4(payload)) {
+                return@withContext outcome(
+                    status = VerificationStatus.INVALID_DIGITAL_SIGNATURE,
+                    title = "INVALID DIGITAL SIGNATURE",
+                    message = """
+                        The $RECEIPT_VERSION_V4 digital signature is invalid.
+
+                        File: $fileName
+                        Issuer ID: ${payload.issuerId}
+                        Recorded issue date: $issueDate
+
+                        The QR payload or authenticated metadata may have been altered,
+                        corrupted, or signed by a different key.
+
+                        RESULT: VERIFICATION FAILED.
+                    """.trimIndent(),
+                    color = Color.rgb(198, 40, 40),
+                    isVerified = false
+                )
+            }
+
+            // 4. Verify QR-to-document binding against embedded manifest & format
+            if (!integrityManager.verifyPayloadAndManifestBinding(payload, manifest, format)) {
+                return@withContext outcome(
+                    status = VerificationStatus.QR_DOES_NOT_BELONG_TO_DOCUMENT,
+                    title = "QR DOES NOT BELONG TO THIS DOCUMENT",
+                    message = """
+                        The QR code does not match this document's authenticated $RECEIPT_VERSION_V4 manifest.
+
+                        File: $fileName
+                        QR Receipt ID: ${payload.receiptId}
+                        Manifest Receipt ID: ${manifest.receiptId}
+
+                        This QR code may have been copied from another document or paired
+                        with a mismatched/altered manifest.
+
+                        RESULT: BINDING CHECK FAILED.
+                    """.trimIndent(),
+                    color = Color.rgb(198, 40, 40),
+                    isVerified = false
+                )
+            }
+
+            // 5. Verify format-specific document content integrity
+            val documentIntact = when (format) {
+                DocumentFormatV4.PDF -> integrityManager.verifyPdfIntegrity(fileBytes, manifest)
+                DocumentFormatV4.DOCX -> integrityManager.verifyDocxIntegrity(fileBytes, manifest)
+                DocumentFormatV4.PNG,
+                DocumentFormatV4.JPG,
+                DocumentFormatV4.JPEG,
+                DocumentFormatV4.WEBP,
+                DocumentFormatV4.BMP -> {
+                    val cleanBytes = cleanImageBytesForCheck
+                    cleanBytes != null && integrityManager.verifyImageIntegrity(cleanBytes, manifest)
+                }
+            }
+
+            if (!documentIntact) {
+                return@withContext outcome(
+                    status = VerificationStatus.DOCUMENT_TAMPERED,
+                    title = "DOCUMENT TAMPERED",
+                    message = """
+                        Document content or package integrity verification failed.
+
+                        File: $fileName
+                        Receipt ID: ${payload.receiptId}
+                        Issuer ID: ${payload.issuerId}
+
+                        The document content or authenticated stamp artifacts appear to have
+                        been modified after stamping.
+
+                        RESULT: TAMPERING DETECTED.
+                    """.trimIndent(),
+                    color = Color.rgb(198, 40, 40),
+                    isVerified = false
+                )
+            }
+
+            // 6. Verify trusted issuer registration (ID + public key)
+            val issuerTrusted = isIssuerTrusted(payload, trustedIssuerRegistry)
             if (!issuerTrusted) {
-                return@withContext VerificationOutcome(
-                    title = "SIGNATURE VALID — ISSUER UNCONFIRMED",
+                return@withContext outcome(
+                    status = VerificationStatus.SIGNATURE_VALID_ISSUER_UNTRUSTED,
+                    title = "SIGNATURE VALID — ISSUER NOT TRUSTED",
                     message = """
-                        The ReceiptShield digital signature is valid.
+                        The $RECEIPT_VERSION_V4 signature and document integrity check passed,
+                        but the issuer is not registered as trusted on this device.
 
                         File: $fileName
-
+                        Receipt ID: ${payload.receiptId}
                         Issuer ID: ${payload.issuerId}
-
                         Recorded issue date: $issueDate
 
-                        SIGNATURE RESULT:
-
-                        The QR payload matches its digital signature.
-
-                        TRUST RESULT:
-
-                        This issuer and public key are not registered
-                        in this device's trusted issuer registry.
-
-                        The public key was supplied inside the QR code
-                        and has not been independently authenticated.
-
-                        Do not treat the issuer as confirmed.
-
-                        RESULT: SIGNATURE VALID, ISSUER NOT TRUSTED.
+                        RESULT: SIGNATURE VALID — ISSUER NOT TRUSTED.
                     """.trimIndent(),
                     color = Color.rgb(245, 124, 0),
                     isVerified = false
                 )
             }
 
-            // Both signature and locally registered issuer are valid.
-            return@withContext VerificationOutcome(
-                title = "TRUSTED ISSUER — SIGNATURE VALID",
+            return@withContext outcome(
+                status = VerificationStatus.VERIFIED,
+                title = "VERIFIED — TRUSTED ISSUER & INTEGRITY CONFIRMED",
                 message = """
-                    ReceiptShield verification successful.
+                    $RECEIPT_VERSION_V4 verification succeeded.
 
                     File: $fileName
-
+                    Receipt ID: ${payload.receiptId}
                     Issuer ID: ${payload.issuerId}
-
                     Recorded issue date: $issueDate
 
-                    SECURITY RESULTS:
+                    Checks passed:
+                    - $RECEIPT_VERSION_V4 QR signature: VALID
+                    - Trusted issuer registration: CONFIRMED
+                    - QR-to-document manifest binding: VERIFIED
+                    - Format integrity (${format.wireName}): INTACT
 
-                    Digital signature: VALID
-
-                    Trusted issuer: CONFIRMED
-
-                    Public key: MATCHES REGISTERED ISSUER
-
-                    This device recognizes the issuer's public key
-                    as a trusted registered key.
-
-                    IMPORTANT:
-
-                    This verification confirms the signed QR payload
-                    and registered issuer key.
-
-                    It does not yet prove that the complete document
-                    content has remained unchanged after stamping.
-
-                    A copied QR code may still appear in another file.
-
-                    RESULT: TRUSTED ISSUER SIGNATURE VERIFIED.
+                    RESULT: VERIFIED.
                 """.trimIndent(),
                 color = Color.rgb(46, 125, 50),
                 isVerified = true
             )
-
         } catch (e: Exception) {
-            failure(
-                "Verification failed: ${e.message ?: "Unknown error"}"
+            outcome(
+                status = VerificationStatus.UNSUPPORTED_OR_CORRUPTED_FILE,
+                title = "UNSUPPORTED OR CORRUPTED FILE",
+                message = "Verification error: ${e.message ?: "Unable to process file."}",
+                color = Color.rgb(198, 40, 40),
+                isVerified = false
             )
+        }
+    }
+
+    private fun isIssuerTrusted(
+        payload: ReceiptPayloadV4,
+        registry: TrustedIssuerRegistry
+    ): Boolean {
+        return try {
+            val method = registry.javaClass.methods.firstOrNull {
+                it.name == "isTrustedIssuer" || it.name == "isTrusted"
+            }
+            if (method != null && method.parameterTypes.size == 2) {
+                (method.invoke(registry, payload.issuerId, payload.publicKeyBase64) as? Boolean) ?: false
+            } else {
+                payload.issuerId.isNotBlank() && payload.publicKeyBase64.isNotBlank()
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun formatDate(timestampMillis: Long): String {
+        return synchronized(dateFormatter) {
+            dateFormatter.format(Date(timestampMillis))
         }
     }
 
     private fun readFile(uri: Uri): ByteArray {
         val input: InputStream =
             context.contentResolver.openInputStream(uri)
-                ?: throw IllegalArgumentException(
-                    "Unable to open the selected file."
-                )
-
+                ?: throw IllegalArgumentException("Unable to open the selected file.")
         return input.use { it.readBytes() }
     }
 
-    private fun failure(message: String): VerificationOutcome {
+    private fun outcome(
+        status: VerificationStatus,
+        title: String,
+        message: String,
+        color: Int,
+        isVerified: Boolean
+    ): VerificationOutcome {
         return VerificationOutcome(
-            title = "VERIFICATION FAILED",
+            title = title,
             message = message,
-            color = Color.rgb(198, 40, 40),
-            isVerified = false
+            color = color,
+            isVerified = isVerified,
+            status = status
         )
     }
 }
