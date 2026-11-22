@@ -1,6 +1,7 @@
 package com.ali.receiptshield.data
 
 import android.content.Context
+import com.ali.receiptshield.crypto.RECEIPT_VERSION_V4
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -12,7 +13,8 @@ data class StampedRecord(
     val hash: String,
     val issuerId: String,
     val timestamp: Long,
-    val payloadSerialized: String
+    val payloadSerialized: String,
+    val protocolVersion: String = RECEIPT_VERSION_V4
 )
 
 class StampRepository(context: Context) {
@@ -44,6 +46,7 @@ class StampRepository(context: Context) {
                 put("issuerId", item.issuerId)
                 put("timestamp", item.timestamp)
                 put("payloadSerialized", item.payloadSerialized)
+                put("protocolVersion", item.protocolVersion.ifBlank { RECEIPT_VERSION_V4 })
             })
         }
         prefs.edit().putString("stamped_records", array.toString()).apply()
@@ -65,7 +68,9 @@ class StampRepository(context: Context) {
                         hash = obj.optString("hash", ""),
                         issuerId = obj.optString("issuerId", "SHOP_ZANZIBAR_01"),
                         timestamp = obj.optLong("timestamp", 0L),
-                        payloadSerialized = obj.optString("payloadSerialized", "")
+                        payloadSerialized = obj.optString("payloadSerialized", ""),
+                        protocolVersion = obj.optString("protocolVersion", RECEIPT_VERSION_V4)
+                            .ifBlank { RECEIPT_VERSION_V4 }
                     )
                 )
             }
@@ -78,6 +83,13 @@ class StampRepository(context: Context) {
     fun findRecordByHash(hash: String): StampedRecord? {
         if (hash.isBlank()) return null
         return loadRecords().firstOrNull { it.hash.equals(hash, ignoreCase = true) }
+    }
+
+    fun findRecordByReceiptId(receiptId: String): StampedRecord? {
+        if (receiptId.isBlank()) return null
+        return loadRecords().firstOrNull {
+            it.payloadSerialized.contains(receiptId, ignoreCase = false)
+        }
     }
 
     fun clearRecords() {
