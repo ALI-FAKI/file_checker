@@ -9,10 +9,8 @@ import com.ali.receiptshield.crypto.DocumentFormatV4
 import com.ali.receiptshield.crypto.InjectedArtifactType
 import com.ali.receiptshield.crypto.InjectedArtifactV4
 import com.ali.receiptshield.crypto.IntegrityManifestV4
-import com.ali.receiptshield.crypto.PlacementMetaV4
 import com.ali.receiptshield.crypto.ReceiptSecurityManager
 import com.ali.receiptshield.crypto.RsV4IntegrityManager
-import com.ali.receiptshield.crypto.SignatureMetaV4
 import com.ali.receiptshield.crypto.StampModeV4
 import java.io.File
 import java.io.FileOutputStream
@@ -42,7 +40,11 @@ object ImageStampProcessor {
         }
 
         val config = configuration.normalized()
-        val tempStampedFile = File.createTempFile("rs_v4_img_", ".png", outputFile.parentFile ?: originalImage.parentFile)
+        val tempStampedFile = File.createTempFile(
+            "rs_v4_img_",
+            ".png",
+            outputFile.parentFile ?: originalImage.parentFile
+        )
 
         try {
             stampImage(
@@ -64,33 +66,12 @@ object ImageStampProcessor {
                 else -> StampModeV4.QR_ONLY
             }
 
-            val qrPlacementMeta = if (config.mode.includesQr) {
-                val p = config.qrPlacement.normalized()
-                PlacementMetaV4(
-                    pageIndex = p.pageIndex,
-                    xRatio = p.x.toDouble(),
-                    yRatio = p.y.toDouble(),
-                    widthRatio = p.width.toDouble(),
-                    heightRatio = p.width.toDouble()
-                )
-            } else {
-                null
-            }
+            val qrPlacementMeta = config.toQrPlacementMetaV4()
 
             val signatureMeta = if (config.mode.includesSignature) {
                 val sig = config.signature!!
-                val p = sig.placement.normalized()
-                val sigBytes = sig.signatureFile.readBytes()
-                SignatureMetaV4(
-                    placement = PlacementMetaV4(
-                        pageIndex = p.pageIndex,
-                        xRatio = p.x.toDouble(),
-                        yRatio = p.y.toDouble(),
-                        widthRatio = p.width.toDouble(),
-                        heightRatio = p.height.toDouble()
-                    ),
-                    signatureDigestSha256 = securityManager.sha256Bytes(sigBytes)
-                )
+                val sigDigest = securityManager.sha256Bytes(sig.signatureFile.readBytes())
+                config.toSignatureMetaV4(sigDigest)
             } else {
                 null
             }
