@@ -1,7 +1,6 @@
 
 package com.ali.receiptshield
 
-import android.app.Activity
 import android.os.Bundle
 import android.graphics.Color
 import android.view.ViewGroup
@@ -27,6 +26,7 @@ class IssuerManagementActivity : AppCompatActivity() {
     private lateinit var importer: IssuerKeyImporter
 
     private lateinit var container: LinearLayout
+    private lateinit var activeIssuerText: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,7 +50,6 @@ class IssuerManagementActivity : AppCompatActivity() {
         }
 
         scrollView.addView(container)
-
         setContentView(scrollView)
 
         addText(
@@ -64,6 +63,21 @@ class IssuerManagementActivity : AppCompatActivity() {
             "Manage your issuer identity and trusted public keys.",
             14f,
             Color.DKGRAY
+        )
+
+        activeIssuerText = TextView(this).apply {
+            textSize = 16f
+            setTextColor(Color.rgb(230, 95, 35))
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setPadding(0, 16, 0, 16)
+        }
+
+        container.addView(
+            activeIssuerText,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
         )
 
         addButton("View My Issuer Public Key") {
@@ -97,12 +111,7 @@ class IssuerManagementActivity : AppCompatActivity() {
 
         val issuerId = repository.getIssuerId()
 
-        addText(
-            "Active issuer: $issuerId",
-            16f,
-            Color.rgb(230, 95, 35),
-            true
-        )
+        activeIssuerText.text = "Active issuer: $issuerId"
     }
 
     private fun showOwnPublicKey() {
@@ -196,28 +205,31 @@ class IssuerManagementActivity : AppCompatActivity() {
                     packageJson.isBlank() ||
                     fingerprint.isBlank()
                 ) {
-                    showError(
-                        "Both fields are required."
-                    )
+                    showError("Both fields are required.")
                     return@setPositiveButton
                 }
 
-                val result = importer.importRegistrationPackage(
-                    packageJson,
-                    fingerprint
-                )
-
-                AlertDialog.Builder(this)
-                    .setTitle(
-                        if (result.success) {
-                            "Registration Successful"
-                        } else {
-                            "Registration Failed"
-                        }
+                try {
+                    val result = importer.importRegistrationPackage(
+                        packageJson,
+                        fingerprint
                     )
-                    .setMessage(result.message)
-                    .setPositiveButton("OK", null)
-                    .show()
+
+                    AlertDialog.Builder(this)
+                        .setTitle(
+                            if (result.success) {
+                                "Registration Successful"
+                            } else {
+                                "Registration Failed"
+                            }
+                        )
+                        .setMessage(result.message)
+                        .setPositiveButton("OK", null)
+                        .show()
+
+                } catch (e: Exception) {
+                    showError(e.message)
+                }
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -309,7 +321,7 @@ class IssuerManagementActivity : AppCompatActivity() {
             textSize = 12f
             setTextColor(Color.DKGRAY)
             setPadding(24, 16, 24, 16)
-            textIsSelectable = true
+            isTextSelectable = true
         }
 
         AlertDialog.Builder(this)
