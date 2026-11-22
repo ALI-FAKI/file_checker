@@ -1,16 +1,15 @@
-
 package com.ali.receiptshield.crypto
 
+import android.content.Context
 import org.json.JSONObject
-import java.security.MessageDigest
 
-class IssuerKeyImporter(context: android.content.Context) {
+class IssuerKeyImporter(context: Context) {
 
     private val registrationHelper =
         IssuerRegistrationHelper(context.applicationContext)
 
     /**
-     * Validates and imports a ReceiptShield issuer package.
+     * Validates and imports a ReceiptShield issuer package for RS_V4 trust.
      *
      * The fingerprint must be independently confirmed
      * before the issuer is registered as trusted.
@@ -69,11 +68,14 @@ class IssuerKeyImporter(context: android.content.Context) {
                     message = "Unable to calculate public key fingerprint."
                 )
 
+            val cleanSuppliedFingerprint = normalizeFingerprint(suppliedFingerprint)
+            val cleanConfirmedFingerprint = normalizeFingerprint(confirmedFingerprint)
+
             // Check that the fingerprint inside the package
             // matches the actual public key.
             if (
                 !actualFingerprint.equals(
-                    suppliedFingerprint,
+                    cleanSuppliedFingerprint,
                     ignoreCase = true
                 )
             ) {
@@ -87,7 +89,7 @@ class IssuerKeyImporter(context: android.content.Context) {
             // before registering the issuer.
             if (
                 !actualFingerprint.equals(
-                    confirmedFingerprint.trim(),
+                    cleanConfirmedFingerprint,
                     ignoreCase = true
                 )
             ) {
@@ -119,5 +121,12 @@ class IssuerKeyImporter(context: android.content.Context) {
                 message = "Unable to read issuer registration package. Invalid JSON."
             )
         }
+    }
+
+    private fun normalizeFingerprint(raw: String): String {
+        return raw
+            .replace(":", "")
+            .replace(" ", "")
+            .trim()
     }
 }
