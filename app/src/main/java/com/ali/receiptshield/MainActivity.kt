@@ -12,6 +12,7 @@ import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
+import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -60,7 +61,6 @@ class MainActivity : AppCompatActivity() {
     private var latestOutputFile: File? = null
     private var latestMimeType: String = "*/*"
 
-    // Pending stamping workflow.
     private var pendingStampUri: Uri? = null
     private var pendingSignatureFile: File? = null
     private var pendingStampExtension: String = ""
@@ -103,7 +103,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-    // Signature creation result.
     private val signatureEditorLauncher =
         registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
@@ -134,7 +133,6 @@ class MainActivity : AppCompatActivity() {
             continueAfterSignatureCreation()
         }
 
-    // Signature placement result.
     private val signaturePlacementLauncher =
         registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
@@ -173,7 +171,6 @@ class MainActivity : AppCompatActivity() {
             continueAfterSignaturePlacement()
         }
 
-    // QR placement result.
     private val qrPlacementLauncher =
         registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
@@ -241,6 +238,7 @@ class MainActivity : AppCompatActivity() {
 
             setupNavigation()
             setupActions()
+            setupIssuerManagementButton()
             renderStampedFiles()
 
         } catch (t: Throwable) {
@@ -256,6 +254,51 @@ class MainActivity : AppCompatActivity() {
 
             setContentView(errorView)
         }
+    }
+
+    // ---------------------------------------------------------
+    // ISSUER MANAGEMENT BUTTON
+    // ---------------------------------------------------------
+
+    private fun setupIssuerManagementButton() {
+
+        val settingsSection = binding.sectionSettings as? ViewGroup
+            ?: return
+
+        val button = MaterialButton(this).apply {
+
+            text = "Manage Trusted Issuers"
+            isAllCaps = false
+            textSize = 14f
+
+            setOnClickListener {
+
+                try {
+                    startActivity(
+                        Intent(
+                            this@MainActivity,
+                            IssuerManagementActivity::class.java
+                        )
+                    )
+                } catch (e: Exception) {
+
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Unable to open issuer management: ${e.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+
+        val params = ViewGroup.MarginLayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            topMargin = 20
+        }
+
+        settingsSection.addView(button, params)
     }
 
     // ---------------------------------------------------------
@@ -387,7 +430,6 @@ class MainActivity : AppCompatActivity() {
                     pendingPayloadSerialized = payload.serialize()
                     pendingTimestamp = payload.timestamp
                 } else {
-                    // Signature-only must not create a QR payload.
                     pendingPayloadSerialized = ""
                     pendingTimestamp = System.currentTimeMillis()
                 }
@@ -426,7 +468,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // DOCX currently uses the default floating placement.
         if (pendingStampExtension == "docx") {
             pendingSignaturePlacement = SignaturePlacement().normalized()
             continueAfterSignaturePlacement()
@@ -475,7 +516,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // DOCX does not use the PDF/image QR preview editor.
         if (pendingStampExtension == "docx") {
             pendingQrPlacement = QrPlacement().normalized()
             finishPendingWorkflow()
@@ -824,10 +864,6 @@ class MainActivity : AppCompatActivity() {
                 val outputMime: String
                 val isDocumentStamp: Boolean
 
-                // -------------------------------------------------
-                // PDF
-                // -------------------------------------------------
-
                 if (extension == "pdf") {
 
                     outputFile = File(
@@ -872,10 +908,6 @@ class MainActivity : AppCompatActivity() {
                     outputMime = "application/pdf"
                     isDocumentStamp = true
 
-                // -------------------------------------------------
-                // DOCX
-                // -------------------------------------------------
-
                 } else if (extension == "docx") {
 
                     outputFile = File(
@@ -905,14 +937,12 @@ class MainActivity : AppCompatActivity() {
                             }
 
                             StampMode.QR_AND_SIGNATURE -> {
-                                // First insert the signature.
                                 DocxSignatureProcessor.stampDocxWithSignature(
                                     originalBytes,
                                     documentSignature!!,
                                     outputFile
                                 )
 
-                                // Then insert the QR independently.
                                 val signatureStampedBytes =
                                     outputFile.readBytes()
 
@@ -930,10 +960,6 @@ class MainActivity : AppCompatActivity() {
                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
                     isDocumentStamp = true
-
-                // -------------------------------------------------
-                // IMAGE
-                // -------------------------------------------------
 
                 } else {
 
@@ -988,7 +1014,6 @@ class MainActivity : AppCompatActivity() {
                     throw Exception("Stamped output file was not created")
                 }
 
-                // Save history. Empty payload means signature-only.
                 repository.saveRecord(
                     StampedRecord(
                         displayName = fileName,
