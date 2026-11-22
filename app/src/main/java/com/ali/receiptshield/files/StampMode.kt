@@ -1,5 +1,6 @@
-
 package com.ali.receiptshield.files
+
+import com.ali.receiptshield.crypto.StampModeV4
 
 enum class StampMode(
     val includesQr: Boolean,
@@ -24,11 +25,23 @@ enum class StampMode(
         displayName = "QR Code + Signature"
     );
 
+    fun toV4(): StampModeV4 = when (this) {
+        QR_ONLY -> StampModeV4.QR_ONLY
+        SIGNATURE_ONLY -> StampModeV4.SIGNATURE_ONLY
+        QR_AND_SIGNATURE -> StampModeV4.QR_AND_SIGNATURE
+    }
+
     companion object {
         fun fromName(value: String?): StampMode {
             return entries.firstOrNull {
                 it.name.equals(value, ignoreCase = true)
             } ?: QR_ONLY
+        }
+
+        fun fromV4(mode: StampModeV4): StampMode = when (mode) {
+            StampModeV4.QR_ONLY -> QR_ONLY
+            StampModeV4.SIGNATURE_ONLY -> SIGNATURE_ONLY
+            StampModeV4.QR_AND_SIGNATURE -> QR_AND_SIGNATURE
         }
     }
 }
