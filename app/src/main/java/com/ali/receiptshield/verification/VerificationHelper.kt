@@ -1,3 +1,4 @@
+
 package com.ali.receiptshield.verification
 
 import android.content.Context
@@ -43,7 +44,7 @@ class VerificationHelper(
                 .substringAfterLast('.', "")
                 .lowercase()
 
-            // Extract the QR Code based on the file type
+            // Extract the QR code according to the file type.
             val qrContent: String? = when (extension) {
 
                 "pdf" -> {
@@ -61,10 +62,16 @@ class VerificationHelper(
                 }
 
                 else -> {
-                    val bitmap = BitmapFactory.decodeByteArray(fileBytes, 0, fileBytes.size)
+                    val bitmap = BitmapFactory.decodeByteArray(
+                        fileBytes,
+                        0,
+                        fileBytes.size
+                    )
+
                     if (bitmap == null) {
                         return@withContext failure("Unsupported file format.")
                     }
+
                     try {
                         securityManager.decodeQRCode(bitmap)
                     } finally {
@@ -74,45 +81,65 @@ class VerificationHelper(
             }
 
             if (qrContent.isNullOrBlank()) {
-                return@withContext failure("No ReceiptShield QR code was found in this file.")
+                return@withContext failure(
+                    "No ReceiptShield QR code was found in this file."
+                )
             }
 
             val payload = ReceiptPayload.deserialize(qrContent)
-                ?: return@withContext failure("A QR code was found, but the data is invalid.")
+                ?: return@withContext failure(
+                    "A QR code was found, but its ReceiptShield data is invalid."
+                )
 
-            val issueDate = dateFormatter.format(Date(payload.timestamp))
+            val issueDate = synchronized(dateFormatter) {
+                dateFormatter.format(Date(payload.timestamp))
+            }
 
-            // ---------------------------------------------------------
-            // SUCCESS LOGIC
-            // Because the QR is embedded into the file, the hash changes.
-            // Finding the valid QR is the proof of authenticity.
-            // ---------------------------------------------------------
-            
+            // A valid QR payload proves only that readable ReceiptShield
+            // data was detected. It does not prove the document is unchanged,
+            // that the issuer is genuine, or that the QR code was not copied.
+
             return@withContext VerificationOutcome(
-                title = "✅ STAMP VERIFIED",
+                title = "STAMP DETECTED — NOT AUTHENTICATED",
                 message = """
-                    A valid ReceiptShield stamp was detected.
+                    A valid ReceiptShield QR code was detected.
 
                     File: $fileName
 
-                    Issuer ID: ${payload.issuerId}
+                    Issuer ID in QR: ${payload.issuerId}
 
-                    Issued: $issueDate
+                    Recorded issue date: $issueDate
 
-                    The stamp is authentic and was issued by the specified merchant.
+                    SECURITY NOTICE:
+
+                    The QR data is readable and has a valid ReceiptShield
+                    payload format.
+
+                    However, this check does not currently verify the
+                    issuer's identity or prove that the file has not
+                    been modified after stamping.
+
+                    The QR code could also have been copied into another file.
+
+                    This document has NOT been cryptographically authenticated.
                 """.trimIndent(),
-                color = Color.rgb(46, 125, 50), // Green
-                isVerified = true
+                color = Color.rgb(245, 124, 0),
+                isVerified = false
             )
 
         } catch (e: Exception) {
-            failure("Verification failed: ${e.message ?: "Unknown error"}")
+            failure(
+                "Verification failed: ${e.message ?: "Unknown error"}"
+            )
         }
     }
 
     private fun readFile(uri: Uri): ByteArray {
         val input: InputStream = context.contentResolver.openInputStream(uri)
-            ?: throw IllegalArgumentException("Unable to open the selected file.")
+            ?: throw IllegalArgumentException(
+                "Unable to open the selected file."
+            )
+
         return input.use { it.readBytes() }
     }
 
@@ -120,7 +147,7 @@ class VerificationHelper(
         return VerificationOutcome(
             title = "VERIFICATION FAILED",
             message = message,
-            color = Color.rgb(198, 40, 40), // Red
+            color = Color.rgb(198, 40, 40),
             isVerified = false
         )
     }
