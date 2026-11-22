@@ -1,4 +1,3 @@
-
 package com.ali.receiptshield.crypto
 
 import android.util.Base64
@@ -10,7 +9,7 @@ class IssuerKeyExporter(
 ) {
 
     /**
-     * Creates a shareable issuer registration package.
+     * Creates a shareable issuer registration package for RS_V4 verification.
      *
      * The package contains only public information.
      * The private signing key is never exported.
@@ -39,6 +38,7 @@ class IssuerKeyExporter(
 
         return JSONObject().apply {
             put("format", "RECEIPTSHIELD_ISSUER_V1")
+            put("protocol", RECEIPT_VERSION_V4)
             put("issuerId", cleanIssuerId)
             put("publicKey", publicKeyBase64)
             put("fingerprint", fingerprint)
