@@ -1,5 +1,6 @@
-
 package com.ali.receiptshield.qr
+
+import com.ali.receiptshield.crypto.PlacementMetaV4
 
 /**
  * Stores QR code placement relative to a document page.
@@ -26,6 +27,17 @@ data class QrPlacement(
             x = safeX,
             y = safeY,
             width = safeWidth
+        )
+    }
+
+    fun toPlacementMetaV4(): PlacementMetaV4 {
+        val norm = normalized()
+        return PlacementMetaV4(
+            pageIndex = norm.pageIndex,
+            xRatio = norm.x.toDouble(),
+            yRatio = norm.y.toDouble(),
+            widthRatio = norm.width.toDouble(),
+            heightRatio = norm.width.toDouble()
         )
     }
 
