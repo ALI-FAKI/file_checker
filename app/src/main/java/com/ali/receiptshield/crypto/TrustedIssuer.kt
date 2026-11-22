@@ -1,4 +1,3 @@
-
 package com.ali.receiptshield.crypto
 
 import android.content.Context
@@ -100,35 +99,62 @@ class TrustedIssuerRegistry(context: Context) {
     }
 
     /**
-     * Checks whether the issuer ID and public key
-     * are both present in the trusted registry.
+     * Checks whether an RS_V4 payload's issuer ID, public key,
+     * and computed key fingerprint match a locally trusted issuer.
      */
     @Synchronized
-    fun isTrusted(payload: ReceiptPayload): Boolean {
-
-        if (payload.version != "RS_V3") {
+    fun isTrusted(payload: ReceiptPayloadV4): Boolean {
+        if (payload.version != RECEIPT_VERSION_V4) {
             return false
         }
+        return isTrustedIssuer(
+            issuerId = payload.issuerId,
+            publicKeyBase64 = payload.publicKeyBase64
+        )
+    }
 
+    /**
+     * Checks whether the issuer ID and RSA public key match
+     * a locally registered trusted issuer with a valid fingerprint.
+     */
+    @Synchronized
+    fun isTrustedIssuer(
+        issuerId: String,
+        publicKeyBase64: String
+    ): Boolean {
         if (
-            payload.issuerId.isBlank() ||
-            payload.publicKey.isBlank()
+            issuerId.isBlank() ||
+            publicKeyBase64.isBlank()
         ) {
             return false
         }
 
         return try {
+            val decodedKey = Base64.decode(
+                publicKeyBase64,
+                Base64.DEFAULT
+            )
+
+            val publicKey = KeyFactory.getInstance("RSA")
+                .generatePublic(
+                    X509EncodedKeySpec(decodedKey)
+                )
+
             val normalizedKey = Base64.encodeToString(
-                Base64.decode(
-                    payload.publicKey,
-                    Base64.DEFAULT
-                ),
+                publicKey.encoded,
                 Base64.NO_WRAP
             )
 
+            val expectedFingerprint = calculateFingerprint(
+                publicKey.encoded
+            )
+
+            val cleanIssuerId = issuerId.trim()
+
             loadIssuers().any {
-                it.issuerId == payload.issuerId &&
-                    it.publicKey == normalizedKey
+                it.issuerId == cleanIssuerId &&
+                    it.publicKey == normalizedKey &&
+                    it.fingerprint.equals(expectedFingerprint, ignoreCase = true)
             }
 
         } catch (_: Exception) {
@@ -162,7 +188,7 @@ class TrustedIssuerRegistry(context: Context) {
             )
 
             loadIssuers().firstOrNull {
-                it.issuerId == issuerId &&
+                it.issuerId == issuerId.trim() &&
                     it.publicKey == normalizedKey
             }
 
