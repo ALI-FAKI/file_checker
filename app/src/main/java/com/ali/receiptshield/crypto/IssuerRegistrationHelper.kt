@@ -1,4 +1,3 @@
-
 package com.ali.receiptshield.crypto
 
 import android.content.Context
@@ -20,14 +19,16 @@ class IssuerRegistrationHelper(context: Context) {
     )
 
     /**
-     * Validates an issuer's public key and calculates
+     * Validates an issuer's RSA public key and calculates
      * its SHA-256 fingerprint without registering it.
      */
     fun validatePublicKey(
         publicKeyBase64: String
     ): IssuerRegistrationResult {
 
-        if (publicKeyBase64.isBlank()) {
+        val normalizedInput = normalizeBase64Key(publicKeyBase64)
+
+        if (normalizedInput.isBlank()) {
             return IssuerRegistrationResult(
                 success = false,
                 message = "Public key cannot be empty."
@@ -36,7 +37,7 @@ class IssuerRegistrationHelper(context: Context) {
 
         return try {
             val keyBytes = Base64.decode(
-                publicKeyBase64,
+                normalizedInput,
                 Base64.DEFAULT
             )
 
@@ -52,7 +53,7 @@ class IssuerRegistrationHelper(context: Context) {
             IssuerRegistrationResult(
                 success = true,
                 message = """
-                    Public key is valid.
+                    Public key is valid for $RECEIPT_VERSION_V4.
 
                     SHA-256 fingerprint:
                     $fingerprint
@@ -72,7 +73,8 @@ class IssuerRegistrationHelper(context: Context) {
     }
 
     /**
-     * Registers an issuer only after validating its public key.
+     * Registers an issuer only after validating its public key
+     * and matching the confirmed SHA-256 fingerprint.
      */
     fun registerIssuer(
         issuerId: String,
@@ -89,7 +91,8 @@ class IssuerRegistrationHelper(context: Context) {
             )
         }
 
-        val validation = validatePublicKey(publicKeyBase64)
+        val normalizedKey = normalizeBase64Key(publicKeyBase64)
+        val validation = validatePublicKey(normalizedKey)
 
         if (!validation.success) {
             return validation
@@ -101,10 +104,15 @@ class IssuerRegistrationHelper(context: Context) {
                 message = "Unable to calculate public key fingerprint."
             )
 
+        val cleanFingerprint = confirmedFingerprint
+            .replace(":", "")
+            .replace(" ", "")
+            .trim()
+
         // Require an exact fingerprint confirmation.
         if (
             !actualFingerprint.equals(
-                confirmedFingerprint.trim(),
+                cleanFingerprint,
                 ignoreCase = true
             )
         ) {
@@ -117,7 +125,7 @@ class IssuerRegistrationHelper(context: Context) {
                     $actualFingerprint
 
                     Supplied:
-                    ${confirmedFingerprint.trim()}
+                    $cleanFingerprint
 
                     No issuer was registered.
                 """.trimIndent(),
@@ -127,13 +135,13 @@ class IssuerRegistrationHelper(context: Context) {
 
         val registered = registry.registerIssuer(
             issuerId = cleanIssuerId,
-            publicKeyBase64 = publicKeyBase64
+            publicKeyBase64 = normalizedKey
         )
 
         return if (registered) {
             IssuerRegistrationResult(
                 success = true,
-                message = "Issuer successfully registered as trusted.",
+                message = "Issuer successfully registered as trusted for $RECEIPT_VERSION_V4.",
                 fingerprint = actualFingerprint
             )
         } else {
@@ -143,6 +151,14 @@ class IssuerRegistrationHelper(context: Context) {
                 fingerprint = actualFingerprint
             )
         }
+    }
+
+    private fun normalizeBase64Key(rawKey: String): String {
+        return rawKey
+            .replace("-----BEGIN PUBLIC KEY-----", "")
+            .replace("-----END PUBLIC KEY-----", "")
+            .replace("\\s+".toRegex(), "")
+            .trim()
     }
 
     /**
