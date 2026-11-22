@@ -1,15 +1,15 @@
-
 package com.ali.receiptshield.qr
 
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
-import android.view.View
+import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.SeekBar
@@ -17,8 +17,6 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.ali.receiptshield.crypto.ReceiptSecurityManager
-import java.io.File
-import java.io.FileOutputStream
 
 class QrPlacementEditorActivity : AppCompatActivity() {
 
@@ -29,14 +27,14 @@ class QrPlacementEditorActivity : AppCompatActivity() {
         const val EXTRA_X = "qr_x"
         const val EXTRA_Y = "qr_y"
         const val EXTRA_WIDTH = "qr_width"
-
-        private const val REQUEST_DOCUMENT = 1001
     }
 
     private lateinit var editorView: QrPlacementEditorView
     private lateinit var pageLabel: TextView
     private lateinit var sizeLabel: TextView
     private lateinit var sizeSeekBar: SeekBar
+    private lateinit var previousButton: Button
+    private lateinit var nextButton: Button
 
     private var documentUri: Uri? = null
     private var qrContent: String = ""
@@ -51,6 +49,7 @@ class QrPlacementEditorActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        @Suppress("DEPRECATION")
         documentUri = intent.getParcelableExtra(EXTRA_DOCUMENT_URI)
         qrContent = intent.getStringExtra(EXTRA_QR_CONTENT) ?: ""
 
@@ -106,17 +105,17 @@ class QrPlacementEditorActivity : AppCompatActivity() {
 
         val pageControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER
+            gravity = Gravity.CENTER
         }
 
-        val previousButton = Button(this).apply {
+        previousButton = Button(this).apply {
             text = "Previous"
             setOnClickListener {
                 showPage(currentPageIndex - 1)
             }
         }
 
-        val nextButton = Button(this).apply {
+        nextButton = Button(this).apply {
             text = "Next"
             setOnClickListener {
                 showPage(currentPageIndex + 1)
@@ -134,10 +133,7 @@ class QrPlacementEditorActivity : AppCompatActivity() {
 
         sizeSeekBar = SeekBar(this).apply {
             max = 59
-            progress = (
-                (currentPlacement.width - QrPlacement.MIN_WIDTH) /
-                    (QrPlacement.MAX_WIDTH - QrPlacement.MIN_WIDTH) * max
-                ).toInt().coerceIn(0, max)
+            progress = widthToSeekBarProgress(currentPlacement.width)
 
             setOnSeekBarChangeListener(
                 object : SeekBar.OnSeekBarChangeListener {
@@ -182,7 +178,7 @@ class QrPlacementEditorActivity : AppCompatActivity() {
 
         val actionButtons = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER
+            gravity = Gravity.CENTER
         }
 
         val cancelButton = Button(this).apply {
@@ -215,10 +211,19 @@ class QrPlacementEditorActivity : AppCompatActivity() {
         setContentView(root)
 
         editorView.onPlacementChanged = { placement ->
-            currentPlacement = placement
+            currentPlacement = placement.normalized()
+            sizeSeekBar.progress = widthToSeekBarProgress(currentPlacement.width)
+            updateSizeLabel()
         }
 
         updateSizeLabel()
+        updatePageLabel()
+    }
+
+    private fun widthToSeekBarProgress(width: Float): Int {
+        val ratio = (width - QrPlacement.MIN_WIDTH) /
+            (QrPlacement.MAX_WIDTH - QrPlacement.MIN_WIDTH)
+        return (ratio * sizeSeekBar.max).toInt().coerceIn(0, sizeSeekBar.max)
     }
 
     private fun createQrCode() {
@@ -319,7 +324,7 @@ class QrPlacementEditorActivity : AppCompatActivity() {
                     Bitmap.Config.ARGB_8888
                 )
 
-                bitmap.eraseColor(android.graphics.Color.WHITE)
+                bitmap.eraseColor(Color.WHITE)
 
                 page.render(
                     bitmap,
@@ -348,6 +353,8 @@ class QrPlacementEditorActivity : AppCompatActivity() {
     private fun updatePageLabel() {
         pageLabel.text =
             "Page ${currentPageIndex + 1} of $totalPages"
+        previousButton.isEnabled = currentPageIndex > 0
+        nextButton.isEnabled = currentPageIndex < totalPages - 1
     }
 
     private fun updateSizeLabel() {
