@@ -1,4 +1,3 @@
-
 package com.ali.receiptshield.signature
 
 import android.content.Context
@@ -7,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PorterDuff
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
@@ -65,7 +65,9 @@ class SignaturePadView @JvmOverloads constructor(
             canvas.drawPath(path, drawPaint)
         }
 
-        canvas.drawPath(signaturePath, drawPaint)
+        if (!signaturePath.isEmpty) {
+            canvas.drawPath(signaturePath, drawPaint)
+        }
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -73,6 +75,7 @@ class SignaturePadView @JvmOverloads constructor(
         when (event.actionMasked) {
 
             MotionEvent.ACTION_DOWN -> {
+                signaturePath.reset()
                 signaturePath.moveTo(
                     event.x,
                     event.y
@@ -133,6 +136,7 @@ class SignaturePadView @JvmOverloads constructor(
             MotionEvent.ACTION_CANCEL -> {
 
                 signaturePath.reset()
+                hasSignatureInk = paths.isNotEmpty()
 
                 parent?.requestDisallowInterceptTouchEvent(false)
 
@@ -185,7 +189,7 @@ class SignaturePadView @JvmOverloads constructor(
 
         canvas.drawColor(
             Color.TRANSPARENT,
-            android.graphics.PorterDuff.Mode.CLEAR
+            PorterDuff.Mode.CLEAR
         )
 
         for (path in paths) {
