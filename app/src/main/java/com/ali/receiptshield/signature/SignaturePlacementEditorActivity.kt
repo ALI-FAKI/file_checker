@@ -1,4 +1,3 @@
-
 package com.ali.receiptshield.signature
 
 import android.app.Activity
