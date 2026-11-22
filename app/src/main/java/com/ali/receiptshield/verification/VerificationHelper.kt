@@ -68,7 +68,8 @@ class VerificationHelper(
                 )
             }
 
-            if (format == null) {
+            // FIX 1: fromFileNameOrMime returns UNKNOWN, not null
+            if (format == DocumentFormatV4.UNKNOWN) {
                 return@withContext outcome(
                     status = VerificationStatus.UNSUPPORTED_OR_CORRUPTED_FILE,
                     title = "UNSUPPORTED OR CORRUPTED FILE",
@@ -92,6 +93,8 @@ class VerificationHelper(
                     cleanImageBytesForCheck = extracted?.first
                     extracted?.second
                 }
+                // FIX 2: Added else to satisfy exhaustive when
+                else -> null
             }
 
             if (manifest == null || manifest.version != RECEIPT_VERSION_V4) {
@@ -113,7 +116,6 @@ class VerificationHelper(
                 )
             }
 
-            // Handle signature-only mode explicitly: visual signature is not cryptographic proof
             if (manifest.stampMode == StampModeV4.SIGNATURE_ONLY) {
                 val issueDate = formatDate(manifest.createdAtMillis)
                 return@withContext outcome(
@@ -136,7 +138,7 @@ class VerificationHelper(
                 )
             }
 
-            // 2. Extract and parse QR payload for QR-bearing modes
+            // 2. Extract and parse QR payload
             val qrContent: String? = when (format) {
                 DocumentFormatV4.PDF -> documentStampHelper.extractQrFromPdf(fileBytes)
                 DocumentFormatV4.DOCX -> documentStampHelper.extractQrFromDocx(fileBytes)
@@ -160,6 +162,8 @@ class VerificationHelper(
                         bitmap.recycle()
                     }
                 }
+                // FIX 2b: else for exhaustive when
+                else -> null
             }
 
             if (qrContent.isNullOrBlank()) {
@@ -172,21 +176,19 @@ class VerificationHelper(
                 )
             }
 
-            val payload: ReceiptPayloadV4 = try {
-                ReceiptPayloadV4.fromQrJsonString(qrContent)
-            } catch (_: Exception) {
-                return@withContext outcome(
+            // FIX 3: fromQrJsonString returns nullable — add null-safe return
+            val payload: ReceiptPayloadV4 = ReceiptPayloadV4.fromQrJsonString(qrContent)
+                ?: return@withContext outcome(
                     status = VerificationStatus.INVALID_DIGITAL_SIGNATURE,
                     title = "INVALID DIGITAL SIGNATURE",
                     message = "QR payload is not a valid $RECEIPT_VERSION_V4 payload.",
                     color = Color.rgb(198, 40, 40),
                     isVerified = false
                 )
-            }
 
             val issueDate = formatDate(payload.timestampMillis)
 
-            // 3. Verify QR digital signature over all canonical RS_V4 fields
+            // 3. Verify QR digital signature
             if (!securityManager.verifyPayloadSignatureV4(payload)) {
                 return@withContext outcome(
                     status = VerificationStatus.INVALID_DIGITAL_SIGNATURE,
@@ -208,7 +210,7 @@ class VerificationHelper(
                 )
             }
 
-            // 4. Verify QR-to-document binding against embedded manifest & format
+            // 4. Verify QR-to-document binding
             if (!integrityManager.verifyPayloadAndManifestBinding(payload, manifest, format)) {
                 return@withContext outcome(
                     status = VerificationStatus.QR_DOES_NOT_BELONG_TO_DOCUMENT,
@@ -242,6 +244,8 @@ class VerificationHelper(
                     val cleanBytes = cleanImageBytesForCheck
                     cleanBytes != null && integrityManager.verifyImageIntegrity(cleanBytes, manifest)
                 }
+                // FIX 2c: else for exhaustive when
+                else -> false
             }
 
             if (!documentIntact) {
@@ -265,7 +269,7 @@ class VerificationHelper(
                 )
             }
 
-            // 6. Verify trusted issuer registration (ID + public key)
+            // 6. Verify trusted issuer registration
             val issuerTrusted = isIssuerTrusted(payload, trustedIssuerRegistry)
             if (!issuerTrusted) {
                 return@withContext outcome(
@@ -302,7 +306,7 @@ class VerificationHelper(
                     - $RECEIPT_VERSION_V4 QR signature: VALID
                     - Trusted issuer registration: CONFIRMED
                     - QR-to-document manifest binding: VERIFIED
-                    - Format integrity (${format.wireName}): INTACT
+                    - Format integrity (${format.name}): INTACT
 
                     RESULT: VERIFIED.
                 """.trimIndent(),
