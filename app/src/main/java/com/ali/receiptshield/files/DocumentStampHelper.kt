@@ -109,6 +109,8 @@ class DocumentStampHelper(
                 )
             }
 
+            val resolvedSignatureMeta = resolveSignatureMetaForPdf(signature, signatureMeta)
+
             val manifest = integrityManager.buildManifest(
                 receiptId = receiptId,
                 documentFormat = DocumentFormatV4.PDF,
@@ -116,7 +118,7 @@ class DocumentStampHelper(
                 originalDocSha256 = originalDocSha256,
                 issuerId = issuerId,
                 qrPlacement = placementMeta,
-                signatureMeta = signatureMeta,
+                signatureMeta = resolvedSignatureMeta,
                 injectedArtifacts = listOf(
                     InjectedArtifactV4(
                         type = InjectedArtifactType.METADATA_STREAM,
@@ -137,6 +139,38 @@ class DocumentStampHelper(
         }
     }
 
+    private fun resolveSignatureMetaForPdf(
+        signature: DocumentSignature?,
+        providedMeta: SignatureMetaV4?
+    ): SignatureMetaV4? {
+        if (signature == null || !signature.isSignatureFileAvailable()) {
+            return providedMeta
+        }
+
+        val normPlacement = signature.placement.normalized()
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(signature.signatureFile.absolutePath, opts)
+        val computedHeightRatio = if (opts.outWidth > 0 && opts.outHeight > 0) {
+            (normPlacement.width.toDouble() * opts.outHeight.toDouble()) / opts.outWidth.toDouble()
+        } else {
+            providedMeta?.placement?.heightRatio ?: normPlacement.height.toDouble()
+        }
+
+        val sigDigest = providedMeta?.signatureDigestSha256?.takeIf { it.isNotBlank() }
+            ?: securityManager.sha256Bytes(signature.signatureFile.readBytes())
+
+        return SignatureMetaV4(
+            placement = PlacementMetaV4(
+                pageIndex = normPlacement.pageIndex,
+                xRatio = normPlacement.x.toDouble(),
+                yRatio = normPlacement.y.toDouble(),
+                widthRatio = normPlacement.width.toDouble(),
+                heightRatio = computedHeightRatio
+            ),
+            signatureDigestSha256 = sigDigest
+        )
+    }
+
     fun stampDocxV4(
         originalBytes: ByteArray,
         receiptId: String,
@@ -155,6 +189,18 @@ class DocumentStampHelper(
         val entries = unzip(originalBytes)
         val documentXml = entries["word/document.xml"]
             ?: throw IllegalArgumentException("Invalid DOCX file: document.xml was not found.")
+
+        val signatureArtifacts = entries.entries
+            .filter { (entryName, _) ->
+                entryName.startsWith("word/media/receiptshield_signature_") && !entryName.endsWith("/")
+            }
+            .map { (entryName, entryBytes) ->
+                InjectedArtifactV4(
+                    type = InjectedArtifactType.SIGNATURE_IMAGE,
+                    identifier = entryName,
+                    digestSha256 = securityManager.sha256Bytes(entryBytes)
+                )
+            }
 
         val relationshipPath = "word/_rels/document.xml.rels"
         val relationshipsXml = entries[relationshipPath]
@@ -213,27 +259,25 @@ class DocumentStampHelper(
             )
         }
 
-        val manifest = integrityManager.buildManifest(
-            receiptId = receiptId,
-            documentFormat = DocumentFormatV4.DOCX,
-            stampMode = stampMode,
-            originalDocSha256 = originalDocSha256,
-            issuerId = issuerId,
-            qrPlacement = placementMeta,
-            signatureMeta = signatureMeta,
-            injectedArtifacts = listOf(
+        val artifacts = buildList {
+            addAll(signatureArtifacts)
+            add(
                 InjectedArtifactV4(
                     type = InjectedArtifactType.QR_IMAGE,
                     identifier = imagePath,
                     digestSha256 = securityManager.sha256Bytes(qrPngBytes)
-                ),
+                )
+            )
+            add(
                 InjectedArtifactV4(
                     type = InjectedArtifactType.RELATIONSHIP,
                     identifier = relationshipPath,
                     digestSha256 = securityManager.sha256Bytes(
                         entries[relationshipPath] ?: ByteArray(0)
                     )
-                ),
+                )
+            )
+            add(
                 InjectedArtifactV4(
                     type = InjectedArtifactType.CONTENT_TYPE,
                     identifier = "[Content_Types].xml",
@@ -242,6 +286,17 @@ class DocumentStampHelper(
                     )
                 )
             )
+        }
+
+        val manifest = integrityManager.buildManifest(
+            receiptId = receiptId,
+            documentFormat = DocumentFormatV4.DOCX,
+            stampMode = stampMode,
+            originalDocSha256 = originalDocSha256,
+            issuerId = issuerId,
+            qrPlacement = placementMeta,
+            signatureMeta = signatureMeta,
+            injectedArtifacts = artifacts
         )
 
         integrityManager.embedManifestInDocxEntries(entries, manifest)
