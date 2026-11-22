@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.net.Uri
 import com.ali.receiptshield.crypto.ReceiptPayload
 import com.ali.receiptshield.crypto.ReceiptSecurityManager
+import com.ali.receiptshield.crypto.TrustedIssuerRegistry
 import com.ali.receiptshield.files.DocumentStampHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -27,6 +28,9 @@ class VerificationHelper(
     private val dateFormatter: SimpleDateFormat,
     private val documentStampHelper: DocumentStampHelper
 ) {
+
+    private val trustedIssuerRegistry =
+        TrustedIssuerRegistry(context.applicationContext)
 
     suspend fun verifyStampedFile(
         fileUri: Uri,
@@ -98,7 +102,7 @@ class VerificationHelper(
                 dateFormatter.format(Date(payload.timestamp))
             }
 
-            // Legacy payloads do not contain a digital signature.
+            // Legacy stamps do not contain digital signatures.
             if (payload.version != "RS_V3") {
                 return@withContext VerificationOutcome(
                     title = "LEGACY STAMP — NOT AUTHENTICATED",
@@ -107,90 +111,126 @@ class VerificationHelper(
 
                         File: $fileName
 
-                        Issuer ID in QR: ${payload.issuerId}
+                        Issuer ID: ${payload.issuerId}
 
                         Recorded issue date: $issueDate
 
                         SECURITY NOTICE:
 
-                        This stamp uses an older ReceiptShield format
-                        without a cryptographic digital signature.
+                        This stamp does not contain a cryptographic
+                        digital signature.
 
-                        Its issuer identity cannot be authenticated,
-                        and this check cannot establish whether the
-                        document was modified after stamping.
+                        ReceiptShield cannot authenticate the issuer
+                        or establish whether the document was modified.
 
-                        This document has NOT been cryptographically authenticated.
+                        RESULT: NOT VERIFIED.
                     """.trimIndent(),
                     color = Color.rgb(245, 124, 0),
                     isVerified = false
                 )
             }
 
-            // Verify the RS_V3 digital signature.
-            val signatureValid = securityManager
-                .verifyPayloadSignature(payload)
+            // First verify the cryptographic signature.
+            val signatureValid =
+                securityManager.verifyPayloadSignature(payload)
 
             if (!signatureValid) {
                 return@withContext failure(
                     """
-                    The ReceiptShield digital signature is INVALID.
+                    INVALID DIGITAL SIGNATURE
 
                     File: $fileName
 
-                    Issuer ID in QR: ${payload.issuerId}
+                    Issuer ID: ${payload.issuerId}
 
                     Recorded issue date: $issueDate
 
-                    The digital signature does not match the
-                    signed QR payload.
+                    The digital signature does not match
+                    the signed QR payload.
 
-                    The QR data may have been modified, corrupted,
-                    or signed with a different private key.
+                    The QR data may have been modified,
+                    corrupted, or signed using another private key.
 
-                    Do not treat this document as authenticated.
+                    RESULT: VERIFICATION FAILED.
                     """.trimIndent()
                 )
             }
 
-            // The signature is valid against the public key embedded
-            // in the QR, but that key is not yet checked against a
-            // trusted issuer registry.
+            // Then check whether the exact issuer ID and public key
+            // are registered in the trusted local issuer registry.
+            val issuerTrusted =
+                trustedIssuerRegistry.isTrusted(payload)
+
+            if (!issuerTrusted) {
+                return@withContext VerificationOutcome(
+                    title = "SIGNATURE VALID — ISSUER UNCONFIRMED",
+                    message = """
+                        The ReceiptShield digital signature is valid.
+
+                        File: $fileName
+
+                        Issuer ID: ${payload.issuerId}
+
+                        Recorded issue date: $issueDate
+
+                        SIGNATURE RESULT:
+
+                        The QR payload matches its digital signature.
+
+                        TRUST RESULT:
+
+                        This issuer and public key are not registered
+                        in this device's trusted issuer registry.
+
+                        The public key was supplied inside the QR code
+                        and has not been independently authenticated.
+
+                        Do not treat the issuer as confirmed.
+
+                        RESULT: SIGNATURE VALID, ISSUER NOT TRUSTED.
+                    """.trimIndent(),
+                    color = Color.rgb(245, 124, 0),
+                    isVerified = false
+                )
+            }
+
+            // Both signature and locally registered issuer are valid.
             return@withContext VerificationOutcome(
-                title = "DIGITAL SIGNATURE VALID — ISSUER UNCONFIRMED",
+                title = "TRUSTED ISSUER — SIGNATURE VALID",
                 message = """
-                    The ReceiptShield digital signature is valid.
+                    ReceiptShield verification successful.
 
                     File: $fileName
 
-                    Issuer ID in QR: ${payload.issuerId}
+                    Issuer ID: ${payload.issuerId}
 
                     Recorded issue date: $issueDate
 
-                    SIGNATURE RESULT:
+                    SECURITY RESULTS:
 
-                    The signed QR payload matches its digital signature.
+                    Digital signature: VALID
 
-                    IMPORTANT TRUST NOTICE:
+                    Trusted issuer: CONFIRMED
 
-                    The public key used for verification was supplied
-                    inside the QR code itself.
+                    Public key: MATCHES REGISTERED ISSUER
 
-                    ReceiptShield has not yet checked this key against
-                    a trusted issuer registry.
+                    This device recognizes the issuer's public key
+                    as a trusted registered key.
 
-                    Therefore, the signature is mathematically valid,
-                    but the issuer's real-world identity is NOT confirmed.
+                    IMPORTANT:
 
-                    This check also does not yet prove that the complete
-                    document content has remained unchanged after stamping.
+                    This verification confirms the signed QR payload
+                    and registered issuer key.
+
+                    It does not yet prove that the complete document
+                    content has remained unchanged after stamping.
 
                     A copied QR code may still appear in another file.
 
-                    RESULT: SIGNATURE VALID, ISSUER NOT YET TRUSTED.
+                    RESULT: TRUSTED ISSUER SIGNATURE VERIFIED.
                 """.trimIndent(),
-                color = Color.rgb(245, 124, 0),
-                isVerified = false
+                color = Color.rgb(46, 125, 50),
+                isVerified = true
             )
 
         } catch (e: Exception) {
