@@ -172,7 +172,7 @@ class ReceiptSecurityManager(
         )
 
         val canonicalBytes = unsignedPayload.toCanonicalSigningBytes()
-        val signature = keyManager.sign(String(canonicalBytes, Charsets.UTF_8))
+        val signature = signCanonicalBytes(canonicalBytes)
 
         return unsignedPayload.copy(
             digitalSignatureBase64 = signature
@@ -183,13 +183,20 @@ class ReceiptSecurityManager(
         if (payload.version != RECEIPT_VERSION_V4) {
             return false
         }
-        if (payload.digitalSignatureBase64.isBlank() || payload.publicKeyBase64.isBlank()) {
+        if (
+            payload.digitalSignatureBase64.isBlank() ||
+            payload.publicKeyBase64.isBlank() ||
+            payload.receiptId.isBlank() ||
+            payload.issuerId.isBlank() ||
+            payload.originalDocSha256.isBlank() ||
+            payload.manifestSha256.isBlank()
+        ) {
             return false
         }
 
-        val canonicalData = String(payload.toCanonicalSigningBytes(), Charsets.UTF_8)
-        return keyManager.verify(
-            data = canonicalData,
+        val canonicalBytes = payload.toCanonicalSigningBytes()
+        return verifyCanonicalBytes(
+            canonicalBytes = canonicalBytes,
             signatureBase64 = payload.digitalSignatureBase64,
             publicKeyBase64 = payload.publicKeyBase64
         )
@@ -202,6 +209,41 @@ class ReceiptSecurityManager(
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun signCanonicalBytes(canonicalBytes: ByteArray): String {
+        val byteSignMethod = keyManager.javaClass.methods.firstOrNull {
+            it.name == "sign" && it.parameterTypes.size == 1 && it.parameterTypes[0] == ByteArray::class.java
+        }
+        if (byteSignMethod != null) {
+            return byteSignMethod.invoke(keyManager, canonicalBytes) as String
+        }
+        return keyManager.sign(String(canonicalBytes, Charsets.UTF_8))
+    }
+
+    private fun verifyCanonicalBytes(
+        canonicalBytes: ByteArray,
+        signatureBase64: String,
+        publicKeyBase64: String
+    ): Boolean {
+        val byteVerifyMethod = keyManager.javaClass.methods.firstOrNull {
+            it.name == "verify" &&
+                it.parameterTypes.size == 3 &&
+                it.parameterTypes[0] == ByteArray::class.java
+        }
+        if (byteVerifyMethod != null) {
+            return (byteVerifyMethod.invoke(
+                keyManager,
+                canonicalBytes,
+                signatureBase64,
+                publicKeyBase64
+            ) as? Boolean) ?: false
+        }
+        return keyManager.verify(
+            data = String(canonicalBytes, Charsets.UTF_8),
+            signatureBase64 = signatureBase64,
+            publicKeyBase64 = publicKeyBase64
+        )
     }
 
     fun generateQRCodeBitmap(
