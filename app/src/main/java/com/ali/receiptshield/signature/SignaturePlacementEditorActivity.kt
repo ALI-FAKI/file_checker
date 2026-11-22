@@ -34,6 +34,7 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
     private lateinit var editorView: SignaturePlacementEditorView
     private lateinit var pageLabel: TextView
     private lateinit var navigation: LinearLayout
+    private lateinit var sizeSeekBar: SeekBar
 
     private var documentUri: Uri? = null
     private var signatureBitmap: Bitmap? = null
@@ -51,6 +52,7 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        @Suppress("DEPRECATION")
         documentUri = intent.getParcelableExtra(EXTRA_DOCUMENT_URI)
 
         val signaturePath =
@@ -75,6 +77,14 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
             return
         }
 
+        placement = SignaturePlacement(
+            pageIndex = intent.getIntExtra(EXTRA_PAGE_INDEX, placement.pageIndex),
+            x = intent.getFloatExtra(EXTRA_X, placement.x),
+            y = intent.getFloatExtra(EXTRA_Y, placement.y),
+            width = intent.getFloatExtra(EXTRA_WIDTH, placement.width)
+        ).normalized()
+        currentPage = placement.pageIndex
+
         try {
             isPdf = isPdfDocument(documentUri!!)
 
@@ -82,6 +92,7 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
 
             if (isPdf) {
                 openPdf()
+                currentPage = currentPage.coerceIn(0, totalPages - 1)
                 renderCurrentPage()
             } else {
                 openImage()
@@ -144,6 +155,7 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
 
         editorView.setPageIndex(0)
         editorView.setPlacement(placement)
+        syncSeekBarWithPlacement(placement)
 
         navigation.visibility = View.GONE
         pageLabel.visibility = View.GONE
@@ -173,7 +185,12 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
             setPadding(0, 0, 0, dp(10))
         }
 
-        editorView = SignaturePlacementEditorView(this)
+        editorView = SignaturePlacementEditorView(this).apply {
+            onPlacementChanged = { updated ->
+                placement = updated.normalized()
+                syncSeekBarWithPlacement(placement)
+            }
+        }
 
         val previewParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
@@ -236,14 +253,9 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
             setPadding(0, dp(8), 0, 0)
         }
 
-        val sizeSeekBar = SeekBar(this).apply {
+        sizeSeekBar = SeekBar(this).apply {
             max = 100
-
-            progress = (
-                (placement.width - SignaturePlacement.MIN_WIDTH) /
-                    (SignaturePlacement.MAX_WIDTH -
-                        SignaturePlacement.MIN_WIDTH) * 100f
-                ).toInt().coerceIn(0, 100)
+            progress = widthToSeekBarProgress(placement.width)
 
             setOnSeekBarChangeListener(
                 object : SeekBar.OnSeekBarChangeListener {
@@ -305,10 +317,21 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
             )
         )
 
-        // pageLabel is already inside navigation.
-        // Do not add it to root a second time.
-
         setContentView(root)
+    }
+
+    private fun widthToSeekBarProgress(width: Float): Int {
+        val ratio = (width - SignaturePlacement.MIN_WIDTH) /
+            (SignaturePlacement.MAX_WIDTH - SignaturePlacement.MIN_WIDTH)
+        return (ratio * 100f).toInt().coerceIn(0, 100)
+    }
+
+    private fun syncSeekBarWithPlacement(value: SignaturePlacement) {
+        if (!::sizeSeekBar.isInitialized) return
+        val targetProgress = widthToSeekBarProgress(value.width)
+        if (sizeSeekBar.progress != targetProgress) {
+            sizeSeekBar.progress = targetProgress
+        }
     }
 
     private fun renderCurrentPage() {
@@ -353,6 +376,7 @@ class SignaturePlacementEditorActivity : AppCompatActivity() {
             editorView.setSignature(signature)
             editorView.setPlacement(placement)
             editorView.setPageIndex(currentPage)
+            syncSeekBarWithPlacement(placement)
 
             pageLabel.text =
                 "Page ${currentPage + 1} of $totalPages"
