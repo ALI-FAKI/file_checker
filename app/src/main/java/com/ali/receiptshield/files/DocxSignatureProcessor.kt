@@ -1,12 +1,14 @@
-
 package com.ali.receiptshield.files
 
 import android.graphics.BitmapFactory
+import com.ali.receiptshield.crypto.InjectedArtifactType
+import com.ali.receiptshield.crypto.InjectedArtifactV4
 import com.ali.receiptshield.signature.DocumentSignature
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.LinkedHashMap
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
@@ -17,6 +19,41 @@ object DocxSignatureProcessor {
     private const val EMU_PER_TWIP = 635L
     private const val DEFAULT_PAGE_WIDTH_TWIPS = 11906L
     private const val DEFAULT_PAGE_HEIGHT_TWIPS = 16838L
+
+    /**
+     * Stamps a DOCX signature and returns the injected signature image artifact
+     * so RS_V4 manifest integrity verification can track and strip it canonically.
+     */
+    @Throws(IOException::class)
+    fun stampDocxWithSignatureV4(
+        originalBytes: ByteArray,
+        signature: DocumentSignature,
+        outputFile: File
+    ): InjectedArtifactV4 {
+        if (!signature.isSignatureFileAvailable()) {
+            throw IOException("Signature image is missing or empty.")
+        }
+
+        val signatureFile = signature.signatureFile
+        val signatureBytes = signatureFile.readBytes()
+        val signatureDigest = sha256(signatureBytes)
+
+        val entriesBefore = unzip(originalBytes)
+        val expectedImageName = createUniqueImageName(entriesBefore)
+        val expectedImagePath = "word/media/$expectedImageName"
+
+        stampDocxWithSignature(
+            originalBytes = originalBytes,
+            signature = signature,
+            outputFile = outputFile
+        )
+
+        return InjectedArtifactV4(
+            type = InjectedArtifactType.SIGNATURE_IMAGE,
+            identifier = expectedImagePath,
+            digestSha256 = signatureDigest
+        )
+    }
 
     /**
      * Adds a floating signature image to an existing DOCX document.
@@ -463,5 +500,10 @@ object DocxSignatureProcessor {
         }
 
         return entries
+    }
+
+    private fun sha256(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { "%02x".format(it) }
     }
 }
