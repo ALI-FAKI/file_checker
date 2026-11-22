@@ -108,17 +108,13 @@ class IssuerManagementActivity : AppCompatActivity() {
     }
 
     private fun refreshScreen() {
-
         val issuerId = repository.getIssuerId()
-
         activeIssuerText.text = "Active issuer: $issuerId"
     }
 
     private fun showOwnPublicKey() {
-
         try {
             val keyManager = ReceiptKeyManager()
-
             val publicKey = keyManager.getPublicKeyBase64()
             val fingerprint = exporter.getPublicKeyFingerprint()
 
@@ -136,10 +132,7 @@ class IssuerManagementActivity : AppCompatActivity() {
                 Share only the public key and fingerprint.
             """.trimIndent()
 
-            showCopyDialog(
-                "My Public Key",
-                message
-            )
+            showCopyDialog("My Public Key", message)
 
         } catch (e: Exception) {
             showError(e.message)
@@ -147,7 +140,6 @@ class IssuerManagementActivity : AppCompatActivity() {
     }
 
     private fun exportMyPackage() {
-
         try {
             val issuerId = repository.getIssuerId()
 
@@ -321,7 +313,7 @@ class IssuerManagementActivity : AppCompatActivity() {
             textSize = 12f
             setTextColor(Color.DKGRAY)
             setPadding(24, 16, 24, 16)
-            isTextSelectable = true
+            setTextIsSelectable(true)
         }
 
         AlertDialog.Builder(this)
