@@ -1,4 +1,3 @@
-
 package com.ali.receiptshield.qr
 
 import android.content.Context
@@ -10,6 +9,7 @@ import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 
@@ -97,7 +97,7 @@ class QrPlacementEditorView @JvmOverloads constructor(
     fun setPageIndex(index: Int) {
         placement = placement.copy(
             pageIndex = index.coerceAtLeast(0)
-        )
+        ).normalized()
 
         onPlacementChanged?.invoke(placement)
     }
@@ -274,14 +274,15 @@ class QrPlacementEditorView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (pageBitmap == null || qrBitmap == null) {
+        val currentPage = pageBitmap ?: return false
+        if (qrBitmap == null) {
             return false
         }
 
         when (event.actionMasked) {
 
             MotionEvent.ACTION_DOWN -> {
-                calculatePageRect(pageBitmap!!)
+                calculatePageRect(currentPage)
                 calculateQrRect()
 
                 lastTouchX = event.x
@@ -293,7 +294,7 @@ class QrPlacementEditorView @JvmOverloads constructor(
 
                 val handleRadius = dp(20f)
 
-                val nearHandle = kotlin.math.hypot(
+                val nearHandle = hypot(
                     (event.x - qrRect.right).toDouble(),
                     (event.y - qrRect.bottom).toDouble()
                 ) <= handleRadius
