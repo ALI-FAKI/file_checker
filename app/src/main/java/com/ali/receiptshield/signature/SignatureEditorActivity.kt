@@ -1,4 +1,3 @@
-
 package com.ali.receiptshield.signature
 
 import android.app.Activity
@@ -7,9 +6,13 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.PorterDuff
 import android.graphics.Typeface
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.Gravity
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -32,6 +35,7 @@ class SignatureEditorActivity : AppCompatActivity() {
 
     private lateinit var signaturePad: SignaturePadView
     private lateinit var typedNameInput: EditText
+    private lateinit var typedPreview: TextView
     private lateinit var drawingSection: LinearLayout
     private lateinit var typedSection: LinearLayout
     private lateinit var modeLabel: TextView
@@ -178,7 +182,7 @@ class SignatureEditorActivity : AppCompatActivity() {
 
         typedSection = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            visibility = android.view.View.GONE
+            visibility = View.GONE
         }
 
         val typedTitle = TextView(this).apply {
@@ -212,7 +216,7 @@ class SignatureEditorActivity : AppCompatActivity() {
             setPadding(0, dp(12), 0, dp(5))
         }
 
-        val typedPreview = TextView(this).apply {
+        typedPreview = TextView(this).apply {
             text = "Your signature will appear here"
             textSize = 27f
             typeface = Typeface.create(
@@ -226,7 +230,7 @@ class SignatureEditorActivity : AppCompatActivity() {
         }
 
         typedNameInput.addTextChangedListener(
-            object : android.text.TextWatcher {
+            object : TextWatcher {
 
                 override fun beforeTextChanged(
                     s: CharSequence?,
@@ -248,7 +252,7 @@ class SignatureEditorActivity : AppCompatActivity() {
                 }
 
                 override fun afterTextChanged(
-                    s: android.text.Editable?
+                    s: Editable?
                 ) = Unit
             }
         )
@@ -302,16 +306,16 @@ class SignatureEditorActivity : AppCompatActivity() {
 
         drawingSection.visibility =
             if (mode == MODE_DRAW) {
-                android.view.View.VISIBLE
+                View.VISIBLE
             } else {
-                android.view.View.GONE
+                View.GONE
             }
 
         typedSection.visibility =
             if (mode == MODE_TYPED) {
-                android.view.View.VISIBLE
+                View.VISIBLE
             } else {
-                android.view.View.GONE
+                View.GONE
             }
 
         modeLabel.text =
@@ -334,6 +338,9 @@ class SignatureEditorActivity : AppCompatActivity() {
             setOnClickListener {
                 selectedColor = color
                 signaturePad.signatureColor = color
+                if (::typedPreview.isInitialized) {
+                    typedPreview.setTextColor(color)
+                }
             }
         }
 
@@ -367,32 +374,37 @@ class SignatureEditorActivity : AppCompatActivity() {
         }
 
         try {
-            val directory = File(
-                cacheDir,
-                "signatures"
-            )
-
-            if (!directory.exists()) {
-                directory.mkdirs()
-            }
-
-            val outputFile = File(
-                directory,
-                "signature_${System.currentTimeMillis()}.png"
-            )
-
-            FileOutputStream(outputFile).use { stream ->
-                bitmap.compress(
-                    Bitmap.CompressFormat.PNG,
-                    100,
-                    stream
+            val savedFile = try {
+                SignatureFileHelper.saveSignature(
+                    context = applicationContext,
+                    bitmap = bitmap,
+                    fileName = "signature_${System.currentTimeMillis()}.png"
                 )
+            } catch (_: Exception) {
+                val directory = File(
+                    cacheDir,
+                    "signatures"
+                ).apply {
+                    if (!exists()) mkdirs()
+                }
+
+                File(
+                    directory,
+                    "signature_${System.currentTimeMillis()}.png"
+                ).also { outputFile ->
+                    FileOutputStream(outputFile).use { stream ->
+                        if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)) {
+                            throw IllegalStateException("Failed to encode signature image")
+                        }
+                        stream.flush()
+                    }
+                }
             }
 
             val result = Intent().apply {
                 putExtra(
                     EXTRA_SIGNATURE_PATH,
-                    outputFile.absolutePath
+                    savedFile.absolutePath
                 )
 
                 putExtra(
@@ -433,7 +445,7 @@ class SignatureEditorActivity : AppCompatActivity() {
 
         canvas.drawColor(
             Color.TRANSPARENT,
-            android.graphics.PorterDuff.Mode.CLEAR
+            PorterDuff.Mode.CLEAR
         )
 
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
