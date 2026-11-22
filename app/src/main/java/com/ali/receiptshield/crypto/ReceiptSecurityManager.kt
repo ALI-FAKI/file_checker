@@ -25,17 +25,12 @@ class ReceiptSecurityManager(
     fun hashInputStream(input: InputStream): String {
         val digest = MessageDigest.getInstance("SHA-256")
         val buffer = ByteArray(8192)
-
         var bytesRead = input.read(buffer)
-
         while (bytesRead != -1) {
             digest.update(buffer, 0, bytesRead)
             bytesRead = input.read(buffer)
         }
-
-        return digest.digest().joinToString("") {
-            "%02x".format(it)
-        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     fun computeManifestSha256(manifest: IntegrityManifestV4): String {
@@ -43,59 +38,24 @@ class ReceiptSecurityManager(
     }
 
     fun computePerceptualHash(bitmap: Bitmap): String {
-
-        val resized = Bitmap.createScaledBitmap(
-            bitmap,
-            9,
-            8,
-            true
-        )
-
+        val resized = Bitmap.createScaledBitmap(bitmap, 9, 8, true)
         val pixels = IntArray(9 * 8)
 
         try {
-            resized.getPixels(
-                pixels,
-                0,
-                9,
-                0,
-                0,
-                9,
-                8
-            )
-
+            resized.getPixels(pixels, 0, 9, 0, 0, 9, 8)
             val hashBits = StringBuilder()
-
             for (y in 0 until 8) {
                 for (x in 0 until 8) {
-
                     val left = pixels[y * 9 + x]
                     val right = pixels[y * 9 + x + 1]
-
-                    val leftGray = (
-                        Color.red(left) +
-                            Color.green(left) +
-                            Color.blue(left)
-                        ) / 3
-
-                    val rightGray = (
-                        Color.red(right) +
-                            Color.green(right) +
-                            Color.blue(right)
-                        ) / 3
-
-                    hashBits.append(
-                        if (leftGray > rightGray) "1" else "0"
-                    )
+                    val leftGray = (Color.red(left) + Color.green(left) + Color.blue(left)) / 3
+                    val rightGray = (Color.red(right) + Color.green(right) + Color.blue(right)) / 3
+                    hashBits.append(if (leftGray > rightGray) "1" else "0")
                 }
             }
-
-            return hashBits.toString()
-                .chunked(4)
-                .joinToString("") {
-                    Integer.parseInt(it, 2).toString(16)
-                }
-
+            return hashBits.toString().chunked(4).joinToString("") {
+                Integer.parseInt(it, 2).toString(16)
+            }
         } finally {
             if (resized !== bitmap) {
                 resized.recycle()
@@ -103,49 +63,30 @@ class ReceiptSecurityManager(
         }
     }
 
-    fun isVisuallySimilar(
-        hash1: String,
-        hash2: String,
-        tolerance: Int = 5
-    ): Boolean {
-
-        if (hash1.isEmpty() || hash2.isEmpty()) {
-            return false
-        }
-
-        if (hash1.length != hash2.length) {
-            return false
-        }
+    fun isVisuallySimilar(hash1: String, hash2: String, tolerance: Int = 5): Boolean {
+        if (hash1.isEmpty() || hash2.isEmpty()) return false
+        if (hash1.length != hash2.length) return false
 
         var distance = 0
-
         for (i in hash1.indices) {
             try {
-                val val1 = Integer.parseInt(
-                    hash1[i].toString(),
-                    16
-                )
-
-                val val2 = Integer.parseInt(
-                    hash2[i].toString(),
-                    16
-                )
-
+                val val1 = Integer.parseInt(hash1[i].toString(), 16)
+                val val2 = Integer.parseInt(hash2[i].toString(), 16)
                 distance += Integer.bitCount(val1 xor val2)
-
             } catch (_: Exception) {
                 return false
             }
         }
-
         return distance <= tolerance
     }
 
+    // FIX #2: createStampV4 now accepts stampMode and integrityManifest
     fun createStampV4(
         receiptId: String = UUID.randomUUID().toString(),
         documentFormat: DocumentFormatV4,
+        stampMode: StampModeV4,
+        integrityManifest: IntegrityManifestV4,
         originalDocSha256: String,
-        manifestSha256: String,
         issuerId: String,
         qrPlacement: PlacementMetaV4? = null,
         signatureMeta: SignatureMetaV4? = null,
@@ -155,13 +96,16 @@ class ReceiptSecurityManager(
 
         val safeIssuerId = issuerId.trim().ifEmpty { "UNKNOWN" }
         val publicKey = keyManager.getPublicKeyBase64()
+        val manifestSha256 = computeManifestSha256(integrityManifest)
 
         val unsignedPayload = ReceiptPayloadV4(
             version = RECEIPT_VERSION_V4,
             receiptId = receiptId.trim().ifEmpty { UUID.randomUUID().toString() },
             documentFormat = documentFormat,
+            stampMode = stampMode,
+            integrityManifest = integrityManifest,
             originalDocSha256 = originalDocSha256.lowercase().trim(),
-            manifestSha256 = manifestSha256.lowercase().trim(),
+            manifestSha256 = manifestSha256,
             issuerId = safeIssuerId,
             timestampMillis = timestampMillis,
             nonce = nonce.trim(),
@@ -174,15 +118,11 @@ class ReceiptSecurityManager(
         val canonicalBytes = unsignedPayload.toCanonicalSigningBytes()
         val signature = signCanonicalBytes(canonicalBytes)
 
-        return unsignedPayload.copy(
-            digitalSignatureBase64 = signature
-        )
+        return unsignedPayload.copy(digitalSignatureBase64 = signature)
     }
 
     fun verifyPayloadSignatureV4(payload: ReceiptPayloadV4): Boolean {
-        if (payload.version != RECEIPT_VERSION_V4) {
-            return false
-        }
+        if (payload.version != RECEIPT_VERSION_V4) return false
         if (
             payload.digitalSignatureBase64.isBlank() ||
             payload.publicKeyBase64.isBlank() ||
@@ -202,9 +142,10 @@ class ReceiptSecurityManager(
         )
     }
 
+    // FIX #3: Handle nullable fromQrJsonString before calling verify
     fun parseAndVerifyQrPayloadV4(rawQrText: String): ReceiptPayloadV4? {
         return try {
-            val payload = ReceiptPayloadV4.fromQrJsonString(rawQrText)
+            val payload = ReceiptPayloadV4.fromQrJsonString(rawQrText) ?: return null
             if (verifyPayloadSignatureV4(payload)) payload else null
         } catch (_: Exception) {
             null
@@ -251,64 +192,27 @@ class ReceiptSecurityManager(
         width: Int = 512,
         height: Int = 512
     ): Bitmap? {
-
         return try {
             val writer = QRCodeWriter()
-
-            val hints = mapOf(
-                EncodeHintType.MARGIN to 1
-            )
-
-            val bitMatrix = writer.encode(
-                content,
-                BarcodeFormat.QR_CODE,
-                width,
-                height,
-                hints
-            )
-
-            val bmp = Bitmap.createBitmap(
-                width,
-                height,
-                Bitmap.Config.RGB_565
-            )
-
+            val hints = mapOf(EncodeHintType.MARGIN to 1)
+            val bitMatrix = writer.encode(content, BarcodeFormat.QR_CODE, width, height, hints)
+            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
             for (x in 0 until width) {
                 for (y in 0 until height) {
-                    bmp.setPixel(
-                        x,
-                        y,
-                        if (bitMatrix[x, y]) {
-                            Color.BLACK
-                        } else {
-                            Color.WHITE
-                        }
-                    )
+                    bmp.setPixel(x, y, if (bitMatrix[x, y]) Color.BLACK else Color.WHITE)
                 }
             }
-
             bmp
-
         } catch (_: Exception) {
             null
         }
     }
 
     fun decodeQRCode(bitmap: Bitmap): String? {
-
         var safeBitmap: Bitmap? = null
-
         return try {
-
-            safeBitmap = if (
-                bitmap.width > 2000 ||
-                bitmap.height > 2000
-            ) {
-                val ratio = 2000f / maxOf(
-                    bitmap.width,
-                    bitmap.height
-                )
-
+            safeBitmap = if (bitmap.width > 2000 || bitmap.height > 2000) {
+                val ratio = 2000f / maxOf(bitmap.width, bitmap.height)
                 Bitmap.createScaledBitmap(
                     bitmap,
                     (bitmap.width * ratio).toInt().coerceAtLeast(1),
@@ -319,37 +223,13 @@ class ReceiptSecurityManager(
                 bitmap
             }
 
-            val pixels = IntArray(
-                safeBitmap.width * safeBitmap.height
-            )
-
-            safeBitmap.getPixels(
-                pixels,
-                0,
-                safeBitmap.width,
-                0,
-                0,
-                safeBitmap.width,
-                safeBitmap.height
-            )
-
-            val source = RGBLuminanceSource(
-                safeBitmap.width,
-                safeBitmap.height,
-                pixels
-            )
-
-            val binaryBitmap = BinaryBitmap(
-                HybridBinarizer(source)
-            )
-
-            MultiFormatReader()
-                .decode(binaryBitmap)
-                .text
-
+            val pixels = IntArray(safeBitmap.width * safeBitmap.height)
+            safeBitmap.getPixels(pixels, 0, safeBitmap.width, 0, 0, safeBitmap.width, safeBitmap.height)
+            val source = RGBLuminanceSource(safeBitmap.width, safeBitmap.height, pixels)
+            val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
+            MultiFormatReader().decode(binaryBitmap).text
         } catch (_: Exception) {
             null
-
         } finally {
             if (safeBitmap != null && safeBitmap !== bitmap) {
                 safeBitmap.recycle()
