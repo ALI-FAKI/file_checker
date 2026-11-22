@@ -1,7 +1,9 @@
-
 package com.ali.receiptshield.signature
 
+import com.ali.receiptshield.crypto.ReceiptSecurityManager
+import com.ali.receiptshield.crypto.SignatureMetaV4
 import java.io.File
+import java.io.IOException
 
 /**
  * Represents a signature prepared for insertion into a document.
@@ -45,5 +47,24 @@ data class DocumentSignature(
     fun isReadyForProcessing(): Boolean {
         return isSignatureFileAvailable() &&
             placement.pageIndex >= 0
+    }
+
+    /**
+     * Builds an RS_V4 SignatureMetaV4 binding the signature placement
+     * and the SHA-256 digest of the signature image bytes.
+     */
+    @Throws(IOException::class)
+    fun toSignatureMetaV4(
+        securityManager: ReceiptSecurityManager = ReceiptSecurityManager(),
+        aspectRatio: Float = 0.35f
+    ): SignatureMetaV4 {
+        if (!isSignatureFileAvailable()) {
+            throw IOException("Signature file is missing or empty.")
+        }
+        val digest = securityManager.sha256Bytes(signatureFile.readBytes())
+        return SignatureMetaV4(
+            placement = placement.toPlacementMetaV4(aspectRatio = aspectRatio),
+            signatureDigestSha256 = digest
+        )
     }
 }
