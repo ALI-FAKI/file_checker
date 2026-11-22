@@ -373,11 +373,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Collects original document SHA-256 and stamping parameters first.
-     * Final RS_V4 payload construction and signing occur in [finishPendingWorkflow]
-     * only after placement and signature choices are finalized.
-     */
     private fun beginStampWorkflow(
         uri: Uri,
         extension: String,
@@ -817,7 +812,7 @@ class MainActivity : AppCompatActivity() {
                         xRatio = norm.x.toDouble(),
                         yRatio = norm.y.toDouble(),
                         widthRatio = norm.width.toDouble(),
-                        heightRatio = norm.width.toDouble()
+                        heightRatio = norm.height.toDouble() // FIXED: Was norm.width
                     )
                 } else {
                     null
@@ -1233,16 +1228,10 @@ class MainActivity : AppCompatActivity() {
                     return@launch
                 }
 
+                // FIXED: Replaced reflection with direct method call
                 val trusted = withContext(Dispatchers.IO) {
                     val registry = TrustedIssuerRegistry(applicationContext)
-                    val method = registry.javaClass.methods.firstOrNull {
-                        it.name == "isTrustedIssuer" || it.name == "isTrusted"
-                    }
-                    if (method != null && method.parameterTypes.size == 2) {
-                        (method.invoke(registry, payload.issuerId, payload.publicKeyBase64) as? Boolean) ?: false
-                    } else {
-                        payload.issuerId.isNotBlank() && payload.publicKeyBase64.isNotBlank()
-                    }
+                    registry.isTrustedIssuer(payload.issuerId, payload.publicKeyBase64)
                 }
 
                 binding.progressBar.visibility = View.GONE
