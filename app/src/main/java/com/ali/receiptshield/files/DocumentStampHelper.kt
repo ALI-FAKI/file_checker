@@ -93,6 +93,7 @@ class DocumentStampHelper(
                         )
                     }
                 }
+                else -> throw IllegalArgumentException("Unsupported stamp mode for PDF: $stampMode")
             }
 
             val stampedBytes = tempStampedFile.readBytes()
@@ -105,7 +106,7 @@ class DocumentStampHelper(
                     xRatio = norm.x.toDouble(),
                     yRatio = norm.y.toDouble(),
                     widthRatio = norm.width.toDouble(),
-                    heightRatio = norm.width.toDouble()
+                    heightRatio = norm.height.toDouble() // FIXED: Was norm.width
                 )
             }
 
@@ -255,7 +256,7 @@ class DocumentStampHelper(
                 xRatio = norm.x.toDouble(),
                 yRatio = norm.y.toDouble(),
                 widthRatio = norm.width.toDouble(),
-                heightRatio = norm.width.toDouble()
+                heightRatio = norm.height.toDouble() // FIXED: Was norm.width
             )
         }
 
@@ -354,10 +355,6 @@ class DocumentStampHelper(
         }
     }
 
-    /**
-     * Adds a QR code to a PDF using the placement selected by the user.
-     * Coordinates are normalized from the top-left of the page.
-     */
     fun stampPdfWithQrPlacement(
         originalBytes: ByteArray,
         qrBitmap: Bitmap,
@@ -421,9 +418,6 @@ class DocumentStampHelper(
     // PDF SIGNATURE ONLY
     // ---------------------------------------------------------
 
-    /**
-     * Adds a signature to a PDF without generating or inserting a QR code.
-     */
     fun stampPdfSignatureOnly(
         originalBytes: ByteArray,
         signature: DocumentSignature,
@@ -463,7 +457,7 @@ class DocumentStampHelper(
     }
 
     // ---------------------------------------------------------
-    // PDF QR + SIGNATURE WITH INDEPENDENT QR PLACEMENT
+    // PDF QR + SIGNATURE
     // ---------------------------------------------------------
 
     fun stampPdfWithSignatureAndQrPlacement(
@@ -547,10 +541,6 @@ class DocumentStampHelper(
             signatureBitmap.recycle()
         }
     }
-
-    // ---------------------------------------------------------
-    // EXISTING PDF QR + SIGNATURE METHOD
-    // ---------------------------------------------------------
 
     fun stampPdfWithSignature(
         originalBytes: ByteArray,
@@ -683,7 +673,7 @@ class DocumentStampHelper(
     }
 
     // ---------------------------------------------------------
-    // DOCX QR STAMPING - EXISTING DEFAULT METHOD
+    // DOCX STAMPING
     // ---------------------------------------------------------
 
     fun stampDocx(
@@ -735,17 +725,6 @@ class DocumentStampHelper(
         writeDocx(entries, outputFile)
     }
 
-    // ---------------------------------------------------------
-    // DOCX QR POSITIONING
-    // ---------------------------------------------------------
-
-    /**
-     * Inserts a floating QR image using page-relative coordinates.
-     *
-     * DOCX page layout can reflow in different Word applications.
-     * This method uses page-relative anchoring, but exact page
-     * selection still requires further DOCX layout testing.
-     */
     fun stampDocxWithQrPlacement(
         originalBytes: ByteArray,
         qrBitmap: Bitmap,
@@ -896,7 +875,6 @@ class DocumentStampHelper(
                 ?.groupValues?.get(1)?.toLongOrNull()
         } ?: 16838L
 
-        // One twip = 635 EMUs.
         return Pair(
             widthTwips * 635L,
             heightTwips * 635L
@@ -1017,7 +995,7 @@ class DocumentStampHelper(
     }
 
     // ---------------------------------------------------------
-    // QR EXTRACTION FROM PDF
+    // QR EXTRACTION FROM PDF & DOCX
     // ---------------------------------------------------------
 
     fun extractQrFromPdf(pdfBytes: ByteArray): String? {
@@ -1046,10 +1024,6 @@ class DocumentStampHelper(
             document.close()
         }
     }
-
-    // ---------------------------------------------------------
-    // QR EXTRACTION FROM DOCX
-    // ---------------------------------------------------------
 
     fun extractQrFromDocx(docxBytes: ByteArray): String? {
         val entries = unzip(docxBytes)
