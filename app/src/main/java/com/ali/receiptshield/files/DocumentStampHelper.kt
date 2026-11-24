@@ -99,16 +99,8 @@ class DocumentStampHelper(
             val stampedBytes = tempStampedFile.readBytes()
             val renderedDigest = integrityManager.computePdfRenderedPagesDigest(stampedBytes)
 
-            val placementMeta = qrPlacement?.let {
-                val norm = it.normalized()
-                PlacementMetaV4(
-                    pageIndex = norm.pageIndex,
-                    xRatio = norm.x.toDouble(),
-                    yRatio = norm.y.toDouble(),
-                    widthRatio = norm.width.toDouble(),
-                    heightRatio = norm.height.toDouble() // FIXED: Was norm.width
-                )
-            }
+            // FIXED: Using QrPlacement.toPlacementMetaV4()
+            val placementMeta = qrPlacement?.toPlacementMetaV4()
 
             val resolvedSignatureMeta = resolveSignatureMetaForPdf(signature, signatureMeta)
 
@@ -148,26 +140,20 @@ class DocumentStampHelper(
             return providedMeta
         }
 
-        val normPlacement = signature.placement.normalized()
-        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(signature.signatureFile.absolutePath, opts)
-        val computedHeightRatio = if (opts.outWidth > 0 && opts.outHeight > 0) {
-            (normPlacement.width.toDouble() * opts.outHeight.toDouble()) / opts.outWidth.toDouble()
-        } else {
-            providedMeta?.placement?.heightRatio ?: normPlacement.height.toDouble()
-        }
-
         val sigDigest = providedMeta?.signatureDigestSha256?.takeIf { it.isNotBlank() }
             ?: securityManager.sha256Bytes(signature.signatureFile.readBytes())
 
+        // FIXED: Calculate aspect ratio and use SignaturePlacement.toPlacementMetaV4()
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(signature.signatureFile.absolutePath, opts)
+        val aspectRatio = if (opts.outWidth > 0 && opts.outHeight > 0) {
+            opts.outHeight.toFloat() / opts.outWidth.toFloat()
+        } else {
+            0.35f
+        }
+
         return SignatureMetaV4(
-            placement = PlacementMetaV4(
-                pageIndex = normPlacement.pageIndex,
-                xRatio = normPlacement.x.toDouble(),
-                yRatio = normPlacement.y.toDouble(),
-                widthRatio = normPlacement.width.toDouble(),
-                heightRatio = computedHeightRatio
-            ),
+            placement = signature.placement.toPlacementMetaV4(aspectRatio),
             signatureDigestSha256 = sigDigest
         )
     }
@@ -249,16 +235,8 @@ class DocumentStampHelper(
             "$drawingParagraph</w:body>"
         ).toByteArray(Charsets.UTF_8)
 
-        val placementMeta = qrPlacement?.let {
-            val norm = it.normalized()
-            PlacementMetaV4(
-                pageIndex = norm.pageIndex,
-                xRatio = norm.x.toDouble(),
-                yRatio = norm.y.toDouble(),
-                widthRatio = norm.width.toDouble(),
-                heightRatio = norm.height.toDouble() // FIXED: Was norm.width
-            )
-        }
+        // FIXED: Using QrPlacement.toPlacementMetaV4()
+        val placementMeta = qrPlacement?.toPlacementMetaV4()
 
         val artifacts = buildList {
             addAll(signatureArtifacts)
