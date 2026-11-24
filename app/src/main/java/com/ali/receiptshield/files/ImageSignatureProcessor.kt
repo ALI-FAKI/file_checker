@@ -9,7 +9,6 @@ import com.ali.receiptshield.crypto.DocumentFormatV4
 import com.ali.receiptshield.crypto.InjectedArtifactType
 import com.ali.receiptshield.crypto.InjectedArtifactV4
 import com.ali.receiptshield.crypto.IntegrityManifestV4
-import com.ali.receiptshield.crypto.PlacementMetaV4
 import com.ali.receiptshield.crypto.ReceiptSecurityManager
 import com.ali.receiptshield.crypto.RsV4IntegrityManager
 import com.ali.receiptshield.crypto.SignatureMetaV4
@@ -54,20 +53,22 @@ object ImageSignatureProcessor {
 
             val stampedBytes = tempStampedFile.readBytes()
             val stampedDigest = securityManager.sha256Bytes(stampedBytes)
-            val normPlacement = signature.placement.normalized()
             val sigDigest = securityManager.sha256Bytes(signature.signatureFile.readBytes())
 
             val detectedFormat = DocumentFormatV4.fromFileNameOrMime(originalImage.name, null)
                 ?: DocumentFormatV4.PNG
 
+            // FIXED: Compute aspect ratio from signature image, then use toPlacementMetaV4()
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(signature.signatureFile.absolutePath, opts)
+            val aspectRatio = if (opts.outWidth > 0 && opts.outHeight > 0) {
+                opts.outHeight.toFloat() / opts.outWidth.toFloat()
+            } else {
+                0.35f
+            }
+
             val signatureMeta = SignatureMetaV4(
-                placement = PlacementMetaV4(
-                    pageIndex = normPlacement.pageIndex,
-                    xRatio = normPlacement.x.toDouble(),
-                    yRatio = normPlacement.y.toDouble(),
-                    widthRatio = normPlacement.width.toDouble(),
-                    heightRatio = normPlacement.height.toDouble()
-                ),
+                placement = signature.placement.toPlacementMetaV4(aspectRatio),
                 signatureDigestSha256 = sigDigest
             )
 
