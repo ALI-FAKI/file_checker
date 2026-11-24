@@ -38,10 +38,20 @@ enum class StampMode(
             } ?: QR_ONLY
         }
 
+        /**
+         * Maps a [StampModeV4] (crypto layer) to a [StampMode] (UI layer).
+         *
+         * EMBEDDED and DETACHED are QR-embedding strategies that the UI
+         * does not differentiate yet, so they map to QR_ONLY. This is
+         * still a meaningful distinction in the manifest because the
+         * actual StampModeV4 value is preserved inside the payload.
+         */
         fun fromV4(mode: StampModeV4): StampMode = when (mode) {
-            StampModeV4.QR_ONLY -> QR_ONLY
-            StampModeV4.SIGNATURE_ONLY -> SIGNATURE_ONLY
+            StampModeV4.QR_ONLY          -> QR_ONLY
+            StampModeV4.SIGNATURE_ONLY   -> SIGNATURE_ONLY
             StampModeV4.QR_AND_SIGNATURE -> QR_AND_SIGNATURE
+            StampModeV4.EMBEDDED         -> QR_ONLY
+            StampModeV4.DETACHED         -> QR_ONLY
         }
     }
 }
