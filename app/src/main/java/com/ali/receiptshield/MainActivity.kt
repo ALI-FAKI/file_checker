@@ -218,8 +218,6 @@ class MainActivity : AppCompatActivity() {
             binding.etIssuerId.setText(currentIssuer)
             updateIssuerBadge(currentIssuer)
 
-            // FIX 1: Auto-register this device's key so self-stamped
-            // documents verify as trusted on first launch.
             autoRegisterDeviceKey(currentIssuer)
 
             setupNavigation()
@@ -239,25 +237,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * FIX 1: Registers this device's public key under the given issuer ID.
-     * Idempotent — re-registering the same (issuerId, publicKey) pair is a no-op.
-     */
     private fun autoRegisterDeviceKey(issuerId: String) {
         try {
             val publicKey = ReceiptKeyManager().getPublicKeyBase64()
             trustedIssuerRegistry.registerIssuer(issuerId, publicKey)
             Log.i(TAG, "Auto-registered device key for issuer: $issuerId")
         } catch (e: Exception) {
-            // Non-fatal — user can still stamp, just won't auto-trust on their own device
             Log.w(TAG, "Auto-register failed: ${e.message}")
         }
     }
 
-    /**
-     * FIX 3: Returns file size via content resolver, or -1 if unknown.
-     * Avoids loading multi-GB files into memory just to check size.
-     */
     private fun queryFileSize(uri: Uri): Long {
         return try {
             contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
@@ -340,7 +329,6 @@ class MainActivity : AppCompatActivity() {
             try {
                 showLoading(true, "Checking file size...")
 
-                // FIX 3: Pre-check file size before reading into memory
                 val size = queryFileSize(uri)
                 if (size > MAX_FILE_SIZE_BYTES) {
                     throw Exception(
@@ -360,7 +348,6 @@ class MainActivity : AppCompatActivity() {
                     throw Exception("The selected file is empty")
                 }
 
-                // FIX 3: Secondary check in case the content resolver returned -1
                 if (originalBytes.size > MAX_FILE_SIZE_BYTES) {
                     throw Exception(
                         "File is too large to stamp (max ${MAX_FILE_SIZE_BYTES / 1024 / 1024} MB)."
@@ -554,9 +541,6 @@ class MainActivity : AppCompatActivity() {
             val entered = binding.etIssuerId.text?.toString().orEmpty()
             val finalIssuer = repository.saveIssuerId(entered)
 
-            // FIX 1: Register the device's existing key under the new issuer ID
-            // so stamped documents continue to verify as trusted after an issuer rename.
-            // The previous registration remains — clean up via IssuerManagementActivity if needed.
             autoRegisterDeviceKey(finalIssuer)
 
             binding.etIssuerId.setText(finalIssuer)
@@ -606,7 +590,6 @@ class MainActivity : AppCompatActivity() {
                     throw Exception("The selected file is empty")
                 }
 
-                // FIX 3: Final safety net
                 if (originalBytes.size > MAX_FILE_SIZE_BYTES) {
                     throw Exception(
                         "File is too large to stamp (max ${MAX_FILE_SIZE_BYTES / 1024 / 1024} MB)."
@@ -909,11 +892,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * FIX 2: Now handles the "Trust Issuer" button.
+     *
+     * When verification fails with SIGNATURE_VALID_ISSUER_UNTRUSTED, the
+     * VerificationHelper populates untrustedIssuerId and untrustedPublicKeyBase64.
+     * We surface a button that registers the issuer and re-runs verification.
+     */
     private fun runVerification(fileUri: Uri) {
         lifecycleScope.launch {
             binding.progressBar.visibility = View.VISIBLE
             binding.tvVerifyStatus.setTextColor(Color.parseColor("#3C4043"))
             binding.tvVerifyStatus.text = "Running $RECEIPT_VERSION_V4 integrity and binding checks..."
+            binding.btnTrustIssuer.visibility = View.GONE
+            binding.btnTrustIssuer.setOnClickListener(null)
 
             try {
                 val fileName = fileHelper.getFileName(fileUri)
@@ -923,6 +915,30 @@ class MainActivity : AppCompatActivity() {
                 binding.tvVerifyStatus.setTextColor(outcome.color)
                 binding.tvVerifyStatus.text = "${outcome.title}\n\n${outcome.message}"
 
+                val issuerId = outcome.untrustedIssuerId
+                val publicKey = outcome.untrustedPublicKeyBase64
+
+                if (issuerId != null && publicKey != null) {
+                    binding.btnTrustIssuer.visibility = View.VISIBLE
+                    binding.btnTrustIssuer.text = "Trust Issuer: $issuerId"
+                    binding.btnTrustIssuer.setOnClickListener {
+                        val registered = trustedIssuerRegistry.registerIssuer(issuerId, publicKey)
+                        if (registered) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Issuer trusted — re-verifying…",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            runVerification(fileUri)
+                        } else {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Could not register issuer (invalid public key).",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 binding.progressBar.visibility = View.GONE
                 binding.tvVerifyStatus.setTextColor(Color.RED)
@@ -936,6 +952,8 @@ class MainActivity : AppCompatActivity() {
             binding.progressBar.visibility = View.VISIBLE
             binding.tvVerifyStatus.setTextColor(Color.parseColor("#3C4043"))
             binding.tvVerifyStatus.text = "Scanning $RECEIPT_VERSION_V4 QR code and checking digital signature..."
+            binding.btnTrustIssuer.visibility = View.GONE
+            binding.btnTrustIssuer.setOnClickListener(null)
 
             try {
                 val payloadString = withContext(Dispatchers.Default) {
@@ -1013,8 +1031,35 @@ class MainActivity : AppCompatActivity() {
                         The $RECEIPT_VERSION_V4 signature is valid, but this issuer's
                         public key is not registered as trusted on this device.
 
+                        Tap "Trust Issuer" below to add this key and re-verify.
+
                         Camera scanning alone also does not verify document integrity.
                     """.trimIndent()
+
+                    // FIX 2: also offer trust from the camera flow
+                    val camIssuerId = payload.issuerId
+                    val camPublicKey = payload.publicKeyBase64
+                    if (camIssuerId.isNotBlank() && camPublicKey.isNotBlank()) {
+                        binding.btnTrustIssuer.visibility = View.VISIBLE
+                        binding.btnTrustIssuer.text = "Trust Issuer: $camIssuerId"
+                        binding.btnTrustIssuer.setOnClickListener {
+                            val ok = trustedIssuerRegistry.registerIssuer(camIssuerId, camPublicKey)
+                            if (ok) {
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "Issuer trusted. Tap 'Scan QR with Camera' again to re-verify.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                binding.btnTrustIssuer.visibility = View.GONE
+                            } else {
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "Could not register issuer.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    }
                 }
 
             } catch (e: Exception) {
