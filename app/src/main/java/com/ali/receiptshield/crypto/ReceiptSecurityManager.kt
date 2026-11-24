@@ -80,7 +80,6 @@ class ReceiptSecurityManager(
         return distance <= tolerance
     }
 
-    // FIX #2: createStampV4 now accepts stampMode and integrityManifest
     fun createStampV4(
         receiptId: String = UUID.randomUUID().toString(),
         documentFormat: DocumentFormatV4,
@@ -142,7 +141,6 @@ class ReceiptSecurityManager(
         )
     }
 
-    // FIX #3: Handle nullable fromQrJsonString before calling verify
     fun parseAndVerifyQrPayloadV4(rawQrText: String): ReceiptPayloadV4? {
         return try {
             val payload = ReceiptPayloadV4.fromQrJsonString(rawQrText) ?: return null
@@ -152,36 +150,32 @@ class ReceiptSecurityManager(
         }
     }
 
+    /**
+     * FIX 4: Direct call to the byte-based overload. No reflection.
+     *
+     * Both ReceiptKeyManager.sign(ByteArray) and sign(String) exist.
+     * The ByteArray overload is what the V4 canonical signing scheme uses.
+     * Reflection previously searched for sign(ByteArray) but silently fell
+     * back to sign(String) if the method name was ever changed. Since these
+     * two overloads produce DIFFERENT signatures (one hashes UTF-8 bytes of
+     * a string, the other hashes raw bytes), silent fallback would invalidate
+     * every stamp ever issued. Direct call eliminates that risk entirely.
+     */
     private fun signCanonicalBytes(canonicalBytes: ByteArray): String {
-        val byteSignMethod = keyManager.javaClass.methods.firstOrNull {
-            it.name == "sign" && it.parameterTypes.size == 1 && it.parameterTypes[0] == ByteArray::class.java
-        }
-        if (byteSignMethod != null) {
-            return byteSignMethod.invoke(keyManager, canonicalBytes) as String
-        }
-        return keyManager.sign(String(canonicalBytes, Charsets.UTF_8))
+        return keyManager.sign(canonicalBytes)
     }
 
+    /**
+     * FIX 4: Direct call to the byte-based verify overload. No reflection.
+     * See signCanonicalBytes() for reasoning.
+     */
     private fun verifyCanonicalBytes(
         canonicalBytes: ByteArray,
         signatureBase64: String,
         publicKeyBase64: String
     ): Boolean {
-        val byteVerifyMethod = keyManager.javaClass.methods.firstOrNull {
-            it.name == "verify" &&
-                it.parameterTypes.size == 3 &&
-                it.parameterTypes[0] == ByteArray::class.java
-        }
-        if (byteVerifyMethod != null) {
-            return (byteVerifyMethod.invoke(
-                keyManager,
-                canonicalBytes,
-                signatureBase64,
-                publicKeyBase64
-            ) as? Boolean) ?: false
-        }
         return keyManager.verify(
-            data = String(canonicalBytes, Charsets.UTF_8),
+            data = canonicalBytes,
             signatureBase64 = signatureBase64,
             publicKeyBase64 = publicKeyBase64
         )
