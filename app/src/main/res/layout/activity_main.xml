@@ -175,7 +175,7 @@
                     app:backgroundTint="#0F9D58"
                     app:cornerRadius="12dp" />
 
-                <!-- NEW CAMERA SCAN BUTTON -->
+                <!-- CAMERA SCAN BUTTON -->
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnScanQrCamera"
                     style="@style/Widget.MaterialComponents.Button.OutlinedButton"
@@ -190,6 +190,24 @@
                     app:cornerRadius="12dp"
                     app:strokeColor="#0F9D58"
                     app:strokeWidth="2dp" />
+
+                <!-- FIX 2: TRUST ISSUER BUTTON (hidden until needed) -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnTrustIssuer"
+                    android:layout_width="match_parent"
+                    android:layout_height="56dp"
+                    android:layout_marginTop="12dp"
+                    android:text="Trust this issuer"
+                    android:textAllCaps="false"
+                    android:textColor="#FFFFFF"
+                    android:textSize="15sp"
+                    android:textStyle="bold"
+                    android:visibility="gone"
+                    app:backgroundTint="#F59E0B"
+                    app:cornerRadius="12dp"
+                    app:icon="@android:drawable/ic_lock_idle_lock"
+                    app:iconGravity="textStart"
+                    app:iconTint="#FFFFFF" />
 
                 <TextView
                     android:id="@+id/tvVerifyStatus"
@@ -310,7 +328,7 @@
         </LinearLayout>
     </ScrollView>
 
-    <!-- GLOBAL PROGRESS BAR (Moved outside sections so it works on both Stamp & Verify tabs) -->
+    <!-- GLOBAL PROGRESS BAR -->
     <ProgressBar
         android:id="@+id/progressBar"
         android:layout_width="wrap_content"
