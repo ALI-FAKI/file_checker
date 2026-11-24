@@ -266,10 +266,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ---------------------------------------------------------
-    // ISSUER MANAGEMENT BUTTON
-    // ---------------------------------------------------------
-
     private fun setupIssuerManagementButton() {
 
         val settingsSection = binding.sectionSettings as? ViewGroup
@@ -310,10 +306,6 @@ class MainActivity : AppCompatActivity() {
 
         settingsSection.addView(button, params)
     }
-
-    // ---------------------------------------------------------
-    // STAMPING WORKFLOW
-    // ---------------------------------------------------------
 
     private fun promptStampOptions(uri: Uri) {
 
@@ -581,10 +573,6 @@ class MainActivity : AppCompatActivity() {
         pendingTimestamp = 0L
     }
 
-    // ---------------------------------------------------------
-    // NAVIGATION
-    // ---------------------------------------------------------
-
     private fun setupNavigation() {
 
         binding.bottomNav.setOnItemSelectedListener { item ->
@@ -634,10 +622,6 @@ class MainActivity : AppCompatActivity() {
 
         binding.scrollContent.scrollTo(0, 0)
     }
-
-    // ---------------------------------------------------------
-    // BUTTON ACTIONS
-    // ---------------------------------------------------------
 
     private fun setupActions() {
 
@@ -732,10 +716,6 @@ class MainActivity : AppCompatActivity() {
         binding.tvActiveIssuerBadge.text = "Active Issuer: $issuer"
     }
 
-    // ---------------------------------------------------------
-    // CREATE RS_V4 STAMP AFTER PLACEMENT IS FINALIZED
-    // ---------------------------------------------------------
-
     private fun processStampCreation(
         fileUri: Uri,
         receiptId: String,
@@ -805,33 +785,27 @@ class MainActivity : AppCompatActivity() {
                     StampMode.QR_AND_SIGNATURE -> StampModeV4.QR_AND_SIGNATURE
                 }
 
+                // FIX 1: Using the toPlacementMetaV4() extension function
                 val qrPlacementMeta = if (mode.includesQr) {
-                    val norm = qrPlacement.normalized()
-                    PlacementMetaV4(
-                        pageIndex = norm.pageIndex,
-                        xRatio = norm.x.toDouble(),
-                        yRatio = norm.y.toDouble(),
-                        widthRatio = norm.width.toDouble(),
-                        heightRatio = norm.height.toDouble() // FIXED: Was norm.width
-                    )
+                    qrPlacement.toPlacementMetaV4()
                 } else {
                     null
                 }
 
+                // FIX 2: Using the toPlacementMetaV4() extension function with aspect ratio
                 val signatureMeta = if (mode.includesSignature) {
                     val sig = documentSignature!!
-                    val norm = sig.placement.normalized()
                     val sigDigest = withContext(Dispatchers.IO) {
                         securityManager.sha256Bytes(sig.signatureFile.readBytes())
                     }
+                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(sig.signatureFile.absolutePath, opts)
+                    val aspect = if (opts.outWidth > 0 && opts.outHeight > 0) {
+                        opts.outHeight.toFloat() / opts.outWidth.toFloat()
+                    } else 0.35f
+                    
                     SignatureMetaV4(
-                        placement = PlacementMetaV4(
-                            pageIndex = norm.pageIndex,
-                            xRatio = norm.x.toDouble(),
-                            yRatio = norm.y.toDouble(),
-                            widthRatio = norm.width.toDouble(),
-                            heightRatio = norm.height.toDouble()
-                        ),
+                        placement = sig.placement.toPlacementMetaV4(aspect),
                         signatureDigestSha256 = sigDigest
                     )
                 } else {
@@ -872,12 +846,14 @@ class MainActivity : AppCompatActivity() {
                             injectedArtifacts = emptyList(),
                             createdAtMillis = timestamp
                         )
-                        val manifestSha = integrityManager.computeManifestDigest(provisionalManifest)
+                        
+                        // FIX 3: Replaced manifestSha256 with stampMode and integrityManifest
                         val payloadV4 = securityManager.createStampV4(
                             receiptId = receiptId,
                             documentFormat = DocumentFormatV4.PDF,
+                            stampMode = stampModeV4,
+                            integrityManifest = provisionalManifest,
                             originalDocSha256 = originalHash,
-                            manifestSha256 = manifestSha,
                             issuerId = issuer,
                             qrPlacement = qrPlacementMeta,
                             signatureMeta = signatureMeta,
@@ -943,12 +919,14 @@ class MainActivity : AppCompatActivity() {
                             injectedArtifacts = emptyList(),
                             createdAtMillis = timestamp
                         )
-                        val manifestSha = integrityManager.computeManifestDigest(provisionalManifest)
+                        
+                        // FIX 3: Replaced manifestSha256 with stampMode and integrityManifest
                         val payloadV4 = securityManager.createStampV4(
                             receiptId = receiptId,
                             documentFormat = DocumentFormatV4.DOCX,
+                            stampMode = stampModeV4,
+                            integrityManifest = provisionalManifest,
                             originalDocSha256 = originalHash,
-                            manifestSha256 = manifestSha,
                             issuerId = issuer,
                             qrPlacement = qrPlacementMeta,
                             signatureMeta = signatureMeta,
@@ -1015,12 +993,14 @@ class MainActivity : AppCompatActivity() {
                                 injectedArtifacts = emptyList(),
                                 createdAtMillis = timestamp
                             )
-                            val manifestSha = integrityManager.computeManifestDigest(provisionalManifest)
+                            
+                            // FIX 3: Replaced manifestSha256 with stampMode and integrityManifest
                             val payloadV4 = securityManager.createStampV4(
                                 receiptId = receiptId,
                                 documentFormat = formatV4,
+                                stampMode = stampModeV4,
+                                integrityManifest = provisionalManifest,
                                 originalDocSha256 = originalHash,
-                                manifestSha256 = manifestSha,
                                 issuerId = issuer,
                                 qrPlacement = qrPlacementMeta,
                                 signatureMeta = signatureMeta,
@@ -1119,10 +1099,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ---------------------------------------------------------
-    // VERIFY SELECTED FILE
-    // ---------------------------------------------------------
-
     private fun runVerification(fileUri: Uri) {
 
         lifecycleScope.launch {
@@ -1161,10 +1137,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-
-    // ---------------------------------------------------------
-    // CAMERA QR SCAN - DIGITAL SIGNATURE + TRUST CHECK ONLY
-    // ---------------------------------------------------------
 
     private fun processCameraScan(bitmap: Bitmap) {
 
@@ -1228,7 +1200,6 @@ class MainActivity : AppCompatActivity() {
                     return@launch
                 }
 
-                // FIXED: Replaced reflection with direct method call
                 val trusted = withContext(Dispatchers.IO) {
                     val registry = TrustedIssuerRegistry(applicationContext)
                     registry.isTrustedIssuer(payload.issuerId, payload.publicKeyBase64)
@@ -1289,10 +1260,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-
-    // ---------------------------------------------------------
-    // HISTORY
-    // ---------------------------------------------------------
 
     private fun renderStampedFiles() {
 
@@ -1445,10 +1412,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ---------------------------------------------------------
-    // OPEN FILE
-    // ---------------------------------------------------------
-
     private fun openFile(
         file: File,
         mimeType: String
@@ -1469,10 +1432,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ---------------------------------------------------------
-    // SHARE FILE
-    // ---------------------------------------------------------
-
     private fun shareFile(
         file: File,
         mimeType: String
@@ -1492,10 +1451,6 @@ class MainActivity : AppCompatActivity() {
             ).show()
         }
     }
-
-    // ---------------------------------------------------------
-    // SAVE FILE
-    // ---------------------------------------------------------
 
     private fun saveFile(
         file: File,
@@ -1524,10 +1479,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-
-    // ---------------------------------------------------------
-    // LOADING
-    // ---------------------------------------------------------
 
     private fun showLoading(
         isLoading: Boolean,
