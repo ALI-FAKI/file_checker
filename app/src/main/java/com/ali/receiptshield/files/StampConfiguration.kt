@@ -1,5 +1,6 @@
 package com.ali.receiptshield.files
 
+import android.graphics.BitmapFactory
 import com.ali.receiptshield.crypto.PlacementMetaV4
 import com.ali.receiptshield.crypto.SignatureMetaV4
 import com.ali.receiptshield.qr.QrPlacement
@@ -56,27 +57,30 @@ data class StampConfiguration(
 
     fun toQrPlacementMetaV4(): PlacementMetaV4? {
         if (!mode.includesQr) return null
-        val norm = qrPlacement.normalized()
-        return PlacementMetaV4(
-            pageIndex = norm.pageIndex,
-            xRatio = norm.x.toDouble(),
-            yRatio = norm.y.toDouble(),
-            widthRatio = norm.width.toDouble(),
-            heightRatio = norm.width.toDouble()
-        )
+        // FIXED: Use the QrPlacement extension for consistency
+        return qrPlacement.toPlacementMetaV4()
     }
 
     fun toSignatureMetaV4(signatureDigestSha256: String): SignatureMetaV4? {
         if (!mode.includesSignature) return null
         val sig = signature?.normalized() ?: return null
+
+        // FIXED: Compute aspect ratio from the signature file, then use
+        // SignaturePlacement.toPlacementMetaV4() instead of sig.placement.height
+        val aspectRatio = try {
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(sig.signatureFile.absolutePath, opts)
+            if (opts.outWidth > 0 && opts.outHeight > 0) {
+                opts.outHeight.toFloat() / opts.outWidth.toFloat()
+            } else {
+                0.35f
+            }
+        } catch (_: Exception) {
+            0.35f
+        }
+
         return SignatureMetaV4(
-            placement = PlacementMetaV4(
-                pageIndex = sig.placement.pageIndex,
-                xRatio = sig.placement.x.toDouble(),
-                yRatio = sig.placement.y.toDouble(),
-                widthRatio = sig.placement.width.toDouble(),
-                heightRatio = sig.placement.height.toDouble()
-            ),
+            placement = sig.placement.toPlacementMetaV4(aspectRatio),
             signatureDigestSha256 = signatureDigestSha256.lowercase().trim()
         )
     }
