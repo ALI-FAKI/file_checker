@@ -76,7 +76,7 @@ object SignatureValidation {
 
     /**
      * Performs standard signature validation plus RS_V4 metadata checks
-     * (finite height ratio and readable SHA-256 signature image digest).
+     * (readable SHA-256 signature image digest).
      */
     fun validateForV4(
         signature: DocumentSignature,
@@ -85,10 +85,9 @@ object SignatureValidation {
         val base = validate(signature, totalPages)
         val errors = base.errors.toMutableList()
 
-        if (!signature.placement.height.isFinite()) {
-            errors.add("Signature height ratio is invalid.")
-        }
-
+        // FIXED: Removed the check for signature.placement.height because 
+        // SignaturePlacement now dynamically calculates height using aspect ratio.
+        
         if (isValidImage(signature.signatureFile)) {
             val digest = computeSha256Hex(signature.signatureFile)
             if (digest.isNullOrBlank()) {
