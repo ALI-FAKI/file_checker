@@ -25,7 +25,11 @@ data class VerificationOutcome(
     val message: String,
     val color: Int,
     val isVerified: Boolean,
-    val status: VerificationStatus = VerificationStatus.UNSUPPORTED_OR_CORRUPTED_FILE
+    val status: VerificationStatus = VerificationStatus.UNSUPPORTED_OR_CORRUPTED_FILE,
+    // FIX 2: Populated only when the failing check is "issuer not trusted".
+    // Used by MainActivity to show the "Trust this issuer" button.
+    val untrustedIssuerId: String? = null,
+    val untrustedPublicKeyBase64: String? = null
 )
 
 class VerificationHelper(
@@ -68,7 +72,6 @@ class VerificationHelper(
                 )
             }
 
-            // FIX 1: fromFileNameOrMime returns UNKNOWN, not null
             if (format == DocumentFormatV4.UNKNOWN) {
                 return@withContext outcome(
                     status = VerificationStatus.UNSUPPORTED_OR_CORRUPTED_FILE,
@@ -79,7 +82,7 @@ class VerificationHelper(
                 )
             }
 
-            // 1. Extract embedded RS_V4 Integrity Manifest & clean content when applicable
+            // 1. Extract embedded RS_V4 Integrity Manifest
             var cleanImageBytesForCheck: ByteArray? = null
             val manifest: IntegrityManifestV4? = when (format) {
                 DocumentFormatV4.PDF -> integrityManager.extractManifestFromPdfBytes(fileBytes)
@@ -93,7 +96,6 @@ class VerificationHelper(
                     cleanImageBytesForCheck = extracted?.first
                     extracted?.second
                 }
-                // FIX 2: Added else to satisfy exhaustive when
                 else -> null
             }
 
@@ -162,7 +164,6 @@ class VerificationHelper(
                         bitmap.recycle()
                     }
                 }
-                // FIX 2b: else for exhaustive when
                 else -> null
             }
 
@@ -176,7 +177,6 @@ class VerificationHelper(
                 )
             }
 
-            // FIX 3: fromQrJsonString returns nullable — add null-safe return
             val payload: ReceiptPayloadV4 = ReceiptPayloadV4.fromQrJsonString(qrContent)
                 ?: return@withContext outcome(
                     status = VerificationStatus.INVALID_DIGITAL_SIGNATURE,
@@ -244,11 +244,17 @@ class VerificationHelper(
                     val cleanBytes = cleanImageBytesForCheck
                     cleanBytes != null && integrityManager.verifyImageIntegrity(cleanBytes, manifest)
                 }
-                // FIX 2c: else for exhaustive when
                 else -> false
             }
 
             if (!documentIntact) {
+                // FIX 5: Make DOCX-specific failure honest about the known limitation
+                val docxFailureNote = if (format == DocumentFormatV4.DOCX) {
+                    "\n\nNote: DOCX integrity is best-effort. Microsoft Word and " +
+                    "Google Docs re-serialize the XML on every save, which can " +
+                    "invalidate this check even without intentional content changes."
+                } else ""
+
                 return@withContext outcome(
                     status = VerificationStatus.DOCUMENT_TAMPERED,
                     title = "DOCUMENT TAMPERED",
@@ -262,7 +268,7 @@ class VerificationHelper(
                         The document content or authenticated stamp artifacts appear to have
                         been modified after stamping.
 
-                        RESULT: TAMPERING DETECTED.
+                        RESULT: TAMPERING DETECTED.$docxFailureNote
                     """.trimIndent(),
                     color = Color.rgb(198, 40, 40),
                     isVerified = false
@@ -284,32 +290,50 @@ class VerificationHelper(
                         Issuer ID: ${payload.issuerId}
                         Recorded issue date: $issueDate
 
+                        Tap "Trust this issuer" below to add this public key to your
+                        trusted list and re-verify.
+
                         RESULT: SIGNATURE VALID — ISSUER NOT TRUSTED.
                     """.trimIndent(),
                     color = Color.rgb(245, 124, 0),
-                    isVerified = false
+                    isVerified = false,
+                    // FIX 2: Return the data MainActivity needs to show the trust button
+                    untrustedIssuerId = payload.issuerId,
+                    untrustedPublicKeyBase64 = payload.publicKeyBase64
                 )
+            }
+
+            // Build the VERIFIED message, with a DOCX-specific honesty note.
+            val verifiedBase = """
+                $RECEIPT_VERSION_V4 verification succeeded.
+
+                File: $fileName
+                Receipt ID: ${payload.receiptId}
+                Issuer ID: ${payload.issuerId}
+                Recorded issue date: $issueDate
+
+                Checks passed:
+                - $RECEIPT_VERSION_V4 QR signature: VALID
+                - Trusted issuer registration: CONFIRMED
+                - QR-to-document manifest binding: VERIFIED
+                - Format integrity (${format.name}): INTACT
+
+                RESULT: VERIFIED.
+            """.trimIndent()
+
+            // FIX 5: Append DOCX-specific caveat when applicable
+            val verifiedFinal = if (format == DocumentFormatV4.DOCX) {
+                "$verifiedBase\n\nNote: DOCX integrity is best-effort. Re-saving this file " +
+                "in Microsoft Word or Google Docs may invalidate the integrity check " +
+                "due to XML re-serialization, even without content changes."
+            } else {
+                verifiedBase
             }
 
             return@withContext outcome(
                 status = VerificationStatus.VERIFIED,
                 title = "VERIFIED — TRUSTED ISSUER & INTEGRITY CONFIRMED",
-                message = """
-                    $RECEIPT_VERSION_V4 verification succeeded.
-
-                    File: $fileName
-                    Receipt ID: ${payload.receiptId}
-                    Issuer ID: ${payload.issuerId}
-                    Recorded issue date: $issueDate
-
-                    Checks passed:
-                    - $RECEIPT_VERSION_V4 QR signature: VALID
-                    - Trusted issuer registration: CONFIRMED
-                    - QR-to-document manifest binding: VERIFIED
-                    - Format integrity (${format.name}): INTACT
-
-                    RESULT: VERIFIED.
-                """.trimIndent(),
+                message = verifiedFinal,
                 color = Color.rgb(46, 125, 50),
                 isVerified = true
             )
@@ -324,19 +348,21 @@ class VerificationHelper(
         }
     }
 
+    /**
+     * Direct call to TrustedIssuerRegistry. The previous reflection-based
+     * implementation could silently pick the wrong overload (`isTrusted(payload)`
+     * instead of `isTrustedIssuer(issuerId, publicKey)`) because both names
+     * matched the reflection filter, weakening the trust check.
+     */
     private fun isIssuerTrusted(
         payload: ReceiptPayloadV4,
         registry: TrustedIssuerRegistry
     ): Boolean {
         return try {
-            val method = registry.javaClass.methods.firstOrNull {
-                it.name == "isTrustedIssuer" || it.name == "isTrusted"
-            }
-            if (method != null && method.parameterTypes.size == 2) {
-                (method.invoke(registry, payload.issuerId, payload.publicKeyBase64) as? Boolean) ?: false
-            } else {
-                payload.issuerId.isNotBlank() && payload.publicKeyBase64.isNotBlank()
-            }
+            registry.isTrustedIssuer(
+                issuerId = payload.issuerId,
+                publicKeyBase64 = payload.publicKeyBase64
+            )
         } catch (_: Exception) {
             false
         }
@@ -360,14 +386,18 @@ class VerificationHelper(
         title: String,
         message: String,
         color: Int,
-        isVerified: Boolean
+        isVerified: Boolean,
+        untrustedIssuerId: String? = null,
+        untrustedPublicKeyBase64: String? = null
     ): VerificationOutcome {
         return VerificationOutcome(
             title = title,
             message = message,
             color = color,
             isVerified = isVerified,
-            status = status
+            status = status,
+            untrustedIssuerId = untrustedIssuerId,
+            untrustedPublicKeyBase64 = untrustedPublicKeyBase64
         )
     }
 }
