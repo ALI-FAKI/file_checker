@@ -315,13 +315,19 @@ class SignaturePlacementEditorView @JvmOverloads constructor(
         )
     }
 
+    /**
+     * Computes the local (display-only) normalized height for the signature box,
+     * based on the signature's own aspect ratio. This is used only to clamp y
+     * positions; it is NOT stored in SignaturePlacement, because the actual
+     * height at stamp time is calculated from the real aspect ratio.
+     */
     private fun computeNormalizedHeight(
         widthRatio: Float,
         signature: Bitmap,
         pageWidth: Float,
         pageHeight: Float
     ): Float {
-        if (signature.width <= 0 || pageHeight <= 0f) return placement.height
+        if (signature.width <= 0 || pageHeight <= 0f) return 0.05f
         val aspectRatio = signature.height.toFloat() / signature.width.toFloat()
         return ((widthRatio * pageWidth * aspectRatio) / pageHeight).coerceIn(0.01f, 1f)
     }
@@ -337,6 +343,7 @@ class SignaturePlacementEditorView @JvmOverloads constructor(
         val normalized = placement.normalized()
 
         val signatureWidth = normalized.width
+        // Local height (not stored) used to prevent overflow when dragging.
         val signatureHeight = computeNormalizedHeight(
             widthRatio = signatureWidth,
             signature = signature,
@@ -352,10 +359,10 @@ class SignaturePlacementEditorView @JvmOverloads constructor(
             normalized.y + dy / pageHeight
         ).coerceIn(0f, max(0f, 1f - signatureHeight))
 
+        // FIXED: Removed height = signatureHeight from copy()
         placement = normalized.copy(
             x = newX,
-            y = newY,
-            height = signatureHeight
+            y = newY
         ).normalized()
     }
 
@@ -395,6 +402,7 @@ class SignaturePlacementEditorView @JvmOverloads constructor(
             safeMaximum
         )
 
+        // Local height (not stored) used to prevent overflow when resizing.
         val newHeight = computeNormalizedHeight(
             widthRatio = newWidth,
             signature = signature,
@@ -402,9 +410,9 @@ class SignaturePlacementEditorView @JvmOverloads constructor(
             pageHeight = pageHeight
         )
 
+        // FIXED: Removed height = newHeight from copy()
         placement = normalized.copy(
             width = newWidth,
-            height = newHeight,
             x = normalized.x.coerceIn(0f, 1f - newWidth),
             y = normalized.y.coerceIn(0f, max(0f, 1f - newHeight))
         ).normalized()
