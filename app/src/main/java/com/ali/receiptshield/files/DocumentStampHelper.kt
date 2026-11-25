@@ -93,6 +93,7 @@ class DocumentStampHelper(
                         )
                     }
                 }
+
                 else -> throw IllegalArgumentException("Unsupported stamp mode for PDF: $stampMode")
             }
 
@@ -226,7 +227,8 @@ class DocumentStampHelper(
             createQrDrawingParagraph(relationshipId)
         }
 
-        entries["word/document.xml"] = documentText.replace(
+        entries["word/document.xml"] = replaceLastOccurrence(
+            documentText,
             "</w:body>",
             "$drawingParagraph</w:body>"
         ).toByteArray(Charsets.UTF_8)
@@ -503,7 +505,11 @@ class DocumentStampHelper(
         val documentText = documentXml.toString(Charsets.UTF_8)
         if (!documentText.contains("</w:body>")) throw IllegalArgumentException("Invalid DOCX structure: document body was not found.")
 
-        entries["word/document.xml"] = documentText.replace("</w:body>", "$drawingParagraph</w:body>").toByteArray(Charsets.UTF_8)
+        entries["word/document.xml"] = replaceLastOccurrence(
+            documentText,
+            "</w:body>",
+            "$drawingParagraph</w:body>"
+        ).toByteArray(Charsets.UTF_8)
         writeDocx(entries, outputFile)
     }
 
@@ -534,7 +540,11 @@ class DocumentStampHelper(
         }
 
         val drawing = createQrAnchoredDrawingParagraph(relationshipId, xEmu, yEmu, widthEmu, heightEmu)
-        entries["word/document.xml"] = documentText.replace("</w:body>", "$drawing</w:body>").toByteArray(Charsets.UTF_8)
+        entries["word/document.xml"] = replaceLastOccurrence(
+            documentText,
+            "</w:body>",
+            "$drawing</w:body>"
+        ).toByteArray(Charsets.UTF_8)
         writeDocx(entries, outputFile)
     }
 
@@ -550,9 +560,8 @@ class DocumentStampHelper(
         try {
             val renderer = PDFRenderer(document)
             for (pageIndex in 0 until document.numberOfPages) {
-                val bitmap = renderer.renderImageWithDPI(pageIndex, 300f)
+                val bitmap = renderer.renderImageWithDPI(pageIndex, 200f)
                 try {
-                    // 1. Try cropping to the exact location first (Fast & Precise)
                     if (placementMeta != null && placementMeta.pageIndex == pageIndex) {
                         val cropped = cropBitmapToPlacement(bitmap, placementMeta)
                         if (cropped != null) {
@@ -564,7 +573,6 @@ class DocumentStampHelper(
                             }
                         }
                     }
-                    // 2. Fallback to scanning the whole page (in case it moved)
                     val result = securityManager.decodeQRCode(bitmap)
                     if (!result.isNullOrBlank()) return result
                 } finally {
@@ -582,8 +590,7 @@ class DocumentStampHelper(
         qrEntryPath: String? = null
     ): String? {
         val entries = unzip(docxBytes)
-        
-        // 1. Try extracting the exact file referenced in the manifest
+
         if (qrEntryPath != null && entries.containsKey(qrEntryPath)) {
             val bytes = entries[qrEntryPath]
             if (bytes != null) {
@@ -599,7 +606,6 @@ class DocumentStampHelper(
             }
         }
 
-        // 2. Fallback to scanning all media
         for ((name, bytes) in entries) {
             if (name.startsWith("word/media/") && !name.endsWith("/")) {
                 val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: continue
@@ -614,10 +620,6 @@ class DocumentStampHelper(
         return null
     }
 
-    /**
-     * Crops a Bitmap to the specific normalized coordinates of a PlacementMetaV4.
-     * Adds a safety margin around the crop to ensure the QR code edges are visible.
-     */
     fun cropBitmapToPlacement(bitmap: Bitmap, placement: PlacementMetaV4): Bitmap? {
         return try {
             val x = (placement.xRatio * bitmap.width).toInt().coerceIn(0, bitmap.width - 1)
@@ -625,16 +627,15 @@ class DocumentStampHelper(
             val w = (placement.widthRatio * bitmap.width).toInt().coerceIn(1, bitmap.width - x)
             val h = (placement.heightRatio * bitmap.height).toInt().coerceIn(1, bitmap.height - y)
 
-            // Add 40px margin (or 5% of width) to help the scanner read edges
             val margin = (w * 0.1f).toInt().coerceAtLeast(20)
-            
+
             val cropX = (x - margin).coerceAtLeast(0)
             val cropY = (y - margin).coerceAtLeast(0)
             val cropW = (w + margin * 2).coerceAtMost(bitmap.width - cropX)
             val cropH = (h + margin * 2).coerceAtMost(bitmap.height - cropY)
 
             Bitmap.createBitmap(bitmap, cropX, cropY, cropW, cropH)
-        } catch (e: Exception) {
+        } catch (_: Throwable) {
             null
         }
     }
@@ -642,6 +643,12 @@ class DocumentStampHelper(
     // ---------------------------------------------------------
     // ZIP AND IMAGE UTILITIES
     // ---------------------------------------------------------
+
+    private fun replaceLastOccurrence(source: String, target: String, replacement: String): String {
+        val idx = source.lastIndexOf(target)
+        if (idx == -1) return source
+        return source.substring(0, idx) + replacement + source.substring(idx + target.length)
+    }
 
     private fun createQrAnchoredDrawingParagraph(relationshipId: String, x: Long, y: Long, width: Long, height: Long): String {
         return """
