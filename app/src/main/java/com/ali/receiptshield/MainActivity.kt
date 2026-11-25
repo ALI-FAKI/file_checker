@@ -20,6 +20,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import com.ali.receiptshield.crypto.DocumentFormatV4
 import com.ali.receiptshield.crypto.PlacementMetaV4
@@ -88,6 +89,8 @@ class MainActivity : AppCompatActivity() {
     private var pendingIssuer: String = ""
     private var pendingTimestamp: Long = 0L
 
+    private var cameraPhotoUri: Uri? = null
+
     private val dateFormatter by lazy {
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     }
@@ -103,9 +106,10 @@ class MainActivity : AppCompatActivity() {
         }
 
     private val takePictureLauncher =
-        registerForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
-            if (bitmap != null) {
-                processCameraScan(bitmap)
+        registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+            val uri = cameraPhotoUri
+            if (success && uri != null) {
+                processCameraScan(uri)
             } else {
                 Toast.makeText(this, "Camera cancelled", Toast.LENGTH_SHORT).show()
             }
@@ -515,7 +519,13 @@ class MainActivity : AppCompatActivity() {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf(Manifest.permission.CAMERA), 100)
             } else {
-                takePictureLauncher.launch(null)
+                try {
+                    val photoFile = File(cacheDir, "rs_camera_${System.currentTimeMillis()}.jpg")
+                    cameraPhotoUri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", photoFile)
+                    takePictureLauncher.launch(cameraPhotoUri)
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Could not open camera: ${e.message}", Toast.LENGTH_LONG).show()
+                }
             }
         }
 
@@ -947,23 +957,40 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun processCameraScan(bitmap: Bitmap) {
+    private fun processCameraScan(imageUri: Uri) {
         lifecycleScope.launch {
             binding.progressBar.visibility = View.VISIBLE
             binding.tvVerifyStatus.setTextColor(Color.parseColor("#3C4043"))
-            binding.tvVerifyStatus.text = "Scanning $RECEIPT_VERSION_V4 QR code and checking digital signature..."
+            binding.tvVerifyStatus.text = "Loading high-resolution photo and scanning QR code..."
             binding.btnTrustIssuer.visibility = View.GONE
             binding.btnTrustIssuer.setOnClickListener(null)
 
             try {
+                // 1. Load the full-resolution image on a background thread
+                val bitmap = withContext(Dispatchers.IO) {
+                    contentResolver.openInputStream(imageUri)?.use { stream ->
+                        BitmapFactory.decodeStream(stream)
+                    }
+                }
+
+                if (bitmap == null) {
+                    binding.progressBar.visibility = View.GONE
+                    binding.tvVerifyStatus.setTextColor(Color.RED)
+                    binding.tvVerifyStatus.text = "Could not load the captured image."
+                    return@launch
+                }
+
+                // 2. Use the robust decoder (tries full image, then center crop)
                 val payloadString = withContext(Dispatchers.Default) {
-                    securityManager.decodeQRCode(bitmap)
+                    val result = securityManager.decodeQRCodeRobust(bitmap)
+                    bitmap.recycle()
+                    result
                 }
 
                 if (payloadString.isNullOrBlank()) {
                     binding.progressBar.visibility = View.GONE
                     binding.tvVerifyStatus.setTextColor(Color.RED)
-                    binding.tvVerifyStatus.text = "No $RECEIPT_VERSION_V4 QR code found in the image."
+                    binding.tvVerifyStatus.text = "No $RECEIPT_VERSION_V4 QR code found in the photo. Try getting closer to the code."
                     return@launch
                 }
 
@@ -974,8 +1001,7 @@ class MainActivity : AppCompatActivity() {
                 if (payload == null) {
                     binding.progressBar.visibility = View.GONE
                     binding.tvVerifyStatus.setTextColor(Color.RED)
-                    binding.tvVerifyStatus.text =
-                        "UNSUPPORTED OR INVALID QR PAYLOAD\n\nOnly $RECEIPT_VERSION_V4 payloads are accepted."
+                    binding.tvVerifyStatus.text = "UNSUPPORTED OR INVALID QR PAYLOAD\n\nOnly $RECEIPT_VERSION_V4 payloads are accepted."
                     return@launch
                 }
 
@@ -1015,8 +1041,7 @@ class MainActivity : AppCompatActivity() {
                         Issued: ${dateFormatter.format(Date(payload.timestampMillis))}
 
                         Camera scan verified the $RECEIPT_VERSION_V4 QR signature and issuer trust.
-                        Document content integrity and QR-to-document binding require
-                        selecting the document file via Pick File to Verify.
+                        Document content integrity requires selecting the document file via Pick File to Verify.
                     """.trimIndent()
                 } else {
                     binding.tvVerifyStatus.setTextColor(Color.rgb(230, 145, 0))
@@ -1036,7 +1061,6 @@ class MainActivity : AppCompatActivity() {
                         Camera scanning alone also does not verify document integrity.
                     """.trimIndent()
 
-                    // FIX 2: also offer trust from the camera flow
                     val camIssuerId = payload.issuerId
                     val camPublicKey = payload.publicKeyBase64
                     if (camIssuerId.isNotBlank() && camPublicKey.isNotBlank()) {
@@ -1066,8 +1090,6 @@ class MainActivity : AppCompatActivity() {
                 binding.progressBar.visibility = View.GONE
                 binding.tvVerifyStatus.setTextColor(Color.RED)
                 binding.tvVerifyStatus.text = "Camera verification failed:\n${e.message}"
-            } finally {
-                bitmap.recycle()
             }
         }
     }
