@@ -27,6 +27,7 @@ class QrPlacementEditorActivity : AppCompatActivity() {
         const val EXTRA_X = "qr_x"
         const val EXTRA_Y = "qr_y"
         const val EXTRA_WIDTH = "qr_width"
+        private const val SEEKBAR_MAX = 59
     }
 
     private lateinit var editorView: QrPlacementEditorView
@@ -131,9 +132,13 @@ class QrPlacementEditorActivity : AppCompatActivity() {
             setPadding(0, dp(10), 0, 0)
         }
 
+        // FIX: Assign the seekbar first, THEN set progress. Do not call
+        // widthToSeekBarProgress() inside the .apply block, because that
+        // function used to read sizeSeekBar.max — but sizeSeekBar is not
+        // assigned until this statement completes, causing the lateinit
+        // UninitializedPropertyAccessException.
         sizeSeekBar = SeekBar(this).apply {
-            max = 59
-            progress = widthToSeekBarProgress(currentPlacement.width)
+            max = SEEKBAR_MAX
 
             setOnSeekBarChangeListener(
                 object : SeekBar.OnSeekBarChangeListener {
@@ -147,7 +152,7 @@ class QrPlacementEditorActivity : AppCompatActivity() {
 
                         val width =
                             QrPlacement.MIN_WIDTH +
-                                (progress / 59f) *
+                                (progress / SEEKBAR_MAX.toFloat()) *
                                 (QrPlacement.MAX_WIDTH - QrPlacement.MIN_WIDTH)
 
                         currentPlacement = currentPlacement.copy(
@@ -168,6 +173,9 @@ class QrPlacementEditorActivity : AppCompatActivity() {
                 }
             )
         }
+
+        // Now sizeSeekBar is fully assigned — safe to set progress
+        sizeSeekBar.progress = widthToSeekBarProgress(currentPlacement.width)
 
         val instructions = TextView(this).apply {
             text = "Drag the QR code to move it. Drag the orange corner handle to resize it."
@@ -220,10 +228,14 @@ class QrPlacementEditorActivity : AppCompatActivity() {
         updatePageLabel()
     }
 
+    /**
+     * FIX: Removed the dependency on sizeSeekBar. Uses SEEKBAR_MAX constant
+     * instead, so it can be safely called before sizeSeekBar is assigned.
+     */
     private fun widthToSeekBarProgress(width: Float): Int {
         val ratio = (width - QrPlacement.MIN_WIDTH) /
             (QrPlacement.MAX_WIDTH - QrPlacement.MIN_WIDTH)
-        return (ratio * sizeSeekBar.max).toInt().coerceIn(0, sizeSeekBar.max)
+        return (ratio * SEEKBAR_MAX).toInt().coerceIn(0, SEEKBAR_MAX)
     }
 
     private fun createQrCode() {
