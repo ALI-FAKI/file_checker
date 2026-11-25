@@ -1,4 +1,4 @@
-Package com.ali.receiptshield.crypto
+package com.ali.receiptshield.crypto
 
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -94,7 +94,11 @@ class ReceiptSecurityManager(
     ): ReceiptPayloadV4 {
 
         val safeIssuerId = issuerId.trim().ifEmpty { "UNKNOWN" }
-        val publicKey = keyManager.getPublicKeyBase64()
+        val publicKey = try {
+            keyManager.getPublicKeyBase64()
+        } catch (_: Throwable) {
+            ""
+        }
         val manifestSha256 = computeManifestSha256(integrityManifest)
 
         val unsignedPayload = ReceiptPayloadV4(
@@ -115,7 +119,11 @@ class ReceiptSecurityManager(
         )
 
         val canonicalBytes = unsignedPayload.toCanonicalSigningBytes()
-        val signature = signCanonicalBytes(canonicalBytes)
+        val signature = try {
+            signCanonicalBytes(canonicalBytes)
+        } catch (_: Throwable) {
+            ""
+        }
 
         return unsignedPayload.copy(digitalSignatureBase64 = signature)
     }
@@ -150,25 +158,10 @@ class ReceiptSecurityManager(
         }
     }
 
-    /**
-     * FIX 4: Direct call to the byte-based overload. No reflection.
-     *
-     * Both ReceiptKeyManager.sign(ByteArray) and sign(String) exist.
-     * The ByteArray overload is what the V4 canonical signing scheme uses.
-     * Reflection previously searched for sign(ByteArray) but silently fell
-     * back to sign(String) if the method name was ever changed. Since these
-     * two overloads produce DIFFERENT signatures (one hashes UTF-8 bytes of
-     * a string, the other hashes raw bytes), silent fallback would invalidate
-     * every stamp ever issued. Direct call eliminates that risk entirely.
-     */
     private fun signCanonicalBytes(canonicalBytes: ByteArray): String {
         return keyManager.sign(canonicalBytes)
     }
 
-    /**
-     * FIX 4: Direct call to the byte-based verify overload. No reflection.
-     * See signCanonicalBytes() for reasoning.
-     */
     private fun verifyCanonicalBytes(
         canonicalBytes: ByteArray,
         signatureBase64: String,
@@ -186,18 +179,24 @@ class ReceiptSecurityManager(
         width: Int = 512,
         height: Int = 512
     ): Bitmap? {
+        if (content.isBlank() || width <= 0 || height <= 0) {
+            return null
+        }
         return try {
             val writer = QRCodeWriter()
             val hints = mapOf(EncodeHintType.MARGIN to 1)
             val bitMatrix = writer.encode(content, BarcodeFormat.QR_CODE, width, height, hints)
-            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
-            for (x in 0 until width) {
-                for (y in 0 until height) {
-                    bmp.setPixel(x, y, if (bitMatrix[x, y]) Color.BLACK else Color.WHITE)
+            val pixels = IntArray(width * height)
+            for (y in 0 until height) {
+                val rowOffset = y * width
+                for (x in 0 until width) {
+                    pixels[rowOffset + x] = if (bitMatrix[x, y]) Color.BLACK else Color.WHITE
                 }
             }
-            bmp
-        } catch (_: Exception) {
+            Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565).apply {
+                setPixels(pixels, 0, width, 0, 0, width, height)
+            }
+        } catch (_: Throwable) {
             null
         }
     }
