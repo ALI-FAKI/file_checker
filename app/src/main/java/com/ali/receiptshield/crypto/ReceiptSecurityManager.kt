@@ -43,10 +43,6 @@ class ReceiptSecurityManager(
         return sha256Bytes(manifest.toCanonicalBytes())
     }
 
-    // IMPROVED: Defensive against recycled / empty bitmaps. A failed
-    // perceptual hash should not crash the stamping flow — it just
-    // means the manifest has an empty perceptualHash and image-integrity
-    // falls back to full-bytes hashing.
     fun computePerceptualHash(bitmap: Bitmap): String {
         return try {
             if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
@@ -99,20 +95,6 @@ class ReceiptSecurityManager(
         return distance <= tolerance
     }
 
-    /**
-     * Creates a V4 stamp payload and signs it.
-     *
-     * FIXED: Throws on signing failure instead of silently producing an
-     * unsigned stamp. The previous version caught all Throwables and
-     * returned an empty signature, which produced a document that LOOKED
-     * successfully stamped but could never be verified. The caller
-     * (MainActivity) now catches the exception and shows a real error,
-     * so users know immediately that no file was created.
-     *
-     * @throws IllegalStateException if the AndroidKeyStore is unavailable
-     *         or the signature cannot be generated.
-     * @throws IllegalArgumentException if the input hashes are malformed.
-     */
     fun createStampV4(
         receiptId: String = UUID.randomUUID().toString(),
         documentFormat: DocumentFormatV4,
@@ -126,7 +108,6 @@ class ReceiptSecurityManager(
         nonce: String = UUID.randomUUID().toString().replace("-", "").take(16)
     ): ReceiptPayloadV4 {
 
-        // FIXED: Validate the inputs instead of silently accepting garbage.
         val normalizedHash = originalDocSha256.trim().lowercase()
         require(SHA256_REGEX.matches(normalizedHash)) {
             "originalDocSha256 must be a 64-character lowercase hex string. " +
@@ -141,9 +122,6 @@ class ReceiptSecurityManager(
 
         val safeIssuerId = issuerId.trim().ifEmpty { "UNKNOWN" }
 
-        // FIXED: Get the public key without swallowing exceptions.
-        // If AndroidKeyStore is broken, we want the user to know NOW,
-        // not after they've already shared an unsigned file.
         val publicKey = try {
             keyManager.getPublicKeyBase64()
         } catch (e: Throwable) {
@@ -180,8 +158,6 @@ class ReceiptSecurityManager(
             digitalSignatureBase64 = ""
         )
 
-        // FIXED: Sign without swallowing. Any failure here means we cannot
-        // produce an authentic stamp, so we must abort.
         val canonicalBytes = unsignedPayload.toCanonicalSigningBytes()
         val signature = try {
             signCanonicalBytes(canonicalBytes)
@@ -275,10 +251,6 @@ class ReceiptSecurityManager(
         }
     }
 
-    // IMPROVED: Guard against recycled bitmaps. The previous version
-    // would throw an IllegalArgumentException from createScaledBitmap,
-    // which was caught and returned null — same result, but logged so
-    // it's easier to trace.
     fun decodeQRCode(bitmap: Bitmap): String? {
         var safeBitmap: Bitmap? = null
         return try {
@@ -309,6 +281,33 @@ class ReceiptSecurityManager(
             if (safeBitmap != null && safeBitmap !== bitmap) {
                 safeBitmap.recycle()
             }
+        }
+    }
+
+    /**
+     * A more robust QR decoder for camera photos.
+     * Tries the full image first. If that fails, tries cropping the center 50%,
+     * which helps locate small QR codes in a 12MP photo.
+     */
+    fun decodeQRCodeRobust(bitmap: Bitmap): String? {
+        // 1. Try decoding the full image
+        val fullResult = decodeQRCode(bitmap)
+        if (!fullResult.isNullOrBlank()) return fullResult
+
+        // 2. Try cropping the center square (helps if user didn't zoom in)
+        val size = minOf(bitmap.width, bitmap.height)
+        val left = (bitmap.width - size) / 2
+        val top = (bitmap.height - size) / 2
+
+        return try {
+            val cropped = Bitmap.createBitmap(bitmap, left, top, size, size)
+            try {
+                decodeQRCode(cropped)
+            } finally {
+                cropped.recycle()
+            }
+        } catch (e: Exception) {
+            null
         }
     }
 }
