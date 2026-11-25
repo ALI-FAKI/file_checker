@@ -140,10 +140,14 @@ class VerificationHelper(
                 )
             }
 
-            // 2. Extract and parse QR payload
+            // 2. Extract and parse QR payload (OPTIMIZED USING PLACEMENT DATA)
             val qrContent: String? = when (format) {
-                DocumentFormatV4.PDF -> documentStampHelper.extractQrFromPdf(fileBytes)
-                DocumentFormatV4.DOCX -> documentStampHelper.extractQrFromDocx(fileBytes)
+                DocumentFormatV4.PDF -> {
+                    documentStampHelper.extractQrFromPdf(fileBytes, manifest.qrPlacement)
+                }
+                DocumentFormatV4.DOCX -> {
+                    documentStampHelper.extractQrFromDocx(fileBytes, RsV4IntegrityManager.DOCX_QR_ENTRY)
+                }
                 DocumentFormatV4.PNG,
                 DocumentFormatV4.JPG,
                 DocumentFormatV4.JPEG,
@@ -158,9 +162,18 @@ class VerificationHelper(
                             color = Color.rgb(198, 40, 40),
                             isVerified = false
                         )
+                    
+                    // Crop to the exact QR location for a reliable scan
+                    val cropped = if (manifest.qrPlacement != null) {
+                        documentStampHelper.cropBitmapToPlacement(bitmap, manifest.qrPlacement)
+                    } else {
+                        null
+                    }
+
                     try {
-                        securityManager.decodeQRCode(bitmap)
+                        securityManager.decodeQRCode(cropped ?: bitmap)
                     } finally {
+                        if (cropped != null) cropped.recycle()
                         bitmap.recycle()
                     }
                 }
