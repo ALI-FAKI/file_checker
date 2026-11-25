@@ -1,3 +1,4 @@
+
 package com.ali.receiptshield.files
 
 import android.graphics.Bitmap
@@ -30,6 +31,7 @@ object ImageStampProcessor {
         securityManager: ReceiptSecurityManager = ReceiptSecurityManager(),
         integrityManager: RsV4IntegrityManager = RsV4IntegrityManager(securityManager)
     ): IntegrityManifestV4 {
+
         val validationError = configuration.validate()
         if (validationError != null) {
             throw IOException(validationError)
@@ -40,6 +42,7 @@ object ImageStampProcessor {
         }
 
         val config = configuration.normalized()
+
         val tempStampedFile = File.createTempFile(
             "rs_v4_img_",
             ".png",
@@ -47,6 +50,7 @@ object ImageStampProcessor {
         )
 
         try {
+            // Create the stamped image first.
             stampImage(
                 originalImage = originalImage,
                 qrBitmap = qrBitmap,
@@ -54,28 +58,69 @@ object ImageStampProcessor {
                 outputFile = tempStampedFile
             )
 
+            // Calculate the hash of the completed stamped image.
             val stampedBytes = tempStampedFile.readBytes()
-            val stampedDigest = securityManager.sha256Bytes(stampedBytes)
 
-            val detectedFormat = DocumentFormatV4.fromFileNameOrMime(originalImage.name, null)
-                ?: DocumentFormatV4.PNG
+            if (stampedBytes.isEmpty()) {
+                throw IOException("Stamped image is empty.")
+            }
 
+            val stampedDigest =
+                securityManager.sha256Bytes(stampedBytes)
+
+            // Determine the original image format.
+            val detectedFormat =
+                DocumentFormatV4.fromFileNameOrMime(
+                    originalImage.name,
+                    null
+                ) ?: DocumentFormatV4.PNG
+
+            // Resolve the stamping mode.
             val stampMode = when {
-                config.mode.includesQr && config.mode.includesSignature -> StampModeV4.QR_AND_SIGNATURE
-                config.mode.includesSignature -> StampModeV4.SIGNATURE_ONLY
-                else -> StampModeV4.QR_ONLY
+                config.mode.includesQr &&
+                    config.mode.includesSignature ->
+                    StampModeV4.QR_AND_SIGNATURE
+
+                config.mode.includesSignature ->
+                    StampModeV4.SIGNATURE_ONLY
+
+                else ->
+                    StampModeV4.QR_ONLY
             }
 
-            val qrPlacementMeta = config.toQrPlacementMetaV4()
+            // Prepare placement metadata.
+            val qrPlacementMeta =
+                config.toQrPlacementMetaV4()
 
-            val signatureMeta = if (config.mode.includesSignature) {
-                val sig = config.signature!!
-                val sigDigest = securityManager.sha256Bytes(sig.signatureFile.readBytes())
-                config.toSignatureMetaV4(sigDigest)
-            } else {
-                null
-            }
+            // Prepare signature metadata when a signature is included.
+            val signatureMeta =
+                if (config.mode.includesSignature) {
+                    val signature = config.signature
+                        ?: throw IOException(
+                            "Signature configuration is missing."
+                        )
 
+                    if (
+                        !signature.isSignatureFileAvailable()
+                    ) {
+                        throw IOException(
+                            "Signature image is missing or empty."
+                        )
+                    }
+
+                    val signatureDigest =
+                        securityManager.sha256Bytes(
+                            signature.signatureFile.readBytes()
+                        )
+
+                    config.toSignatureMetaV4(
+                        signatureDigest
+                    )
+                } else {
+                    null
+                }
+
+            // Build the final manifest with the stamped-image artifact.
             val manifest = integrityManager.buildManifest(
                 receiptId = receiptId,
                 documentFormat = detectedFormat,
@@ -93,10 +138,29 @@ object ImageStampProcessor {
                 )
             )
 
-            val finalBytes = integrityManager.embedManifestInImageBytes(stampedBytes, manifest)
+            // Sign the completed manifest after all artifact hashes are known.
+            val signedManifest =
+                integrityManager.signCompletedManifest(manifest)
+
+            // Embed the signed manifest into the image.
+            val finalBytes =
+                integrityManager.embedManifestInImageBytes(
+                    stampedBytes,
+                    signedManifest
+                )
+
             outputFile.parentFile?.mkdirs()
+
+            if (!outputFile.parentFile?.exists().orFalse()) {
+                throw IOException(
+                    "Could not create output directory."
+                )
+            }
+
             outputFile.writeBytes(finalBytes)
-            return manifest
+
+            return signedManifest
+
         } finally {
             if (tempStampedFile.exists()) {
                 tempStampedFile.delete()
@@ -111,6 +175,7 @@ object ImageStampProcessor {
         configuration: StampConfiguration,
         outputFile: File
     ) {
+
         val validationError = configuration.validate()
         if (validationError != null) {
             throw IOException(validationError)
@@ -122,7 +187,8 @@ object ImageStampProcessor {
 
         val config = configuration.normalized()
 
-        if (config.mode.includesQr &&
+        if (
+            config.mode.includesQr &&
             (qrBitmap == null || qrBitmap.isRecycled)
         ) {
             throw IOException("QR code bitmap is unavailable.")
@@ -130,23 +196,39 @@ object ImageStampProcessor {
 
         val source = BitmapFactory.decodeFile(
             originalImage.absolutePath
-        ) ?: throw IOException("Could not decode original image.")
+        ) ?: throw IOException(
+            "Could not decode original image."
+        )
 
         var signatureBitmap: Bitmap? = null
 
         try {
+            // Load the signature when required.
             if (config.mode.includesSignature) {
                 val signatureFile = config.signature!!.signatureFile
 
+                if (
+                    !signatureFile.exists() ||
+                    signatureFile.length() <= 0L
+                ) {
+                    throw IOException(
+                        "Signature image is missing or empty."
+                    )
+                }
+
                 signatureBitmap = BitmapFactory.decodeFile(
                     signatureFile.absolutePath
-                ) ?: throw IOException("Could not decode signature image.")
+                ) ?: throw IOException(
+                    "Could not decode signature image."
+                )
             }
 
             val result = source.copy(
                 Bitmap.Config.ARGB_8888,
                 true
-            ) ?: throw IOException("Could not prepare output image.")
+            ) ?: throw IOException(
+                "Could not prepare output image."
+            )
 
             try {
                 val canvas = Canvas(result)
@@ -156,7 +238,10 @@ object ImageStampProcessor {
                         Paint.FILTER_BITMAP_FLAG
                 )
 
+                // -------------------------------------------------
                 // QR CODE
+                // -------------------------------------------------
+
                 if (config.mode.includesQr) {
                     val placement = config.qrPlacement
 
@@ -166,15 +251,23 @@ object ImageStampProcessor {
                     val requestedSize =
                         placement.width * result.width
 
-                    val availableWidth = result.width - left
-                    val availableHeight = result.height - top
+                    val availableWidth =
+                        result.width - left
+
+                    val availableHeight =
+                        result.height - top
 
                     val size = requestedSize.coerceAtMost(
-                        minOf(availableWidth, availableHeight)
+                        minOf(
+                            availableWidth,
+                            availableHeight
+                        )
                     )
 
                     if (size <= 0f) {
-                        throw IOException("Invalid QR code position.")
+                        throw IOException(
+                            "Invalid QR code position."
+                        )
                     }
 
                     canvas.drawBitmap(
@@ -190,10 +283,15 @@ object ImageStampProcessor {
                     )
                 }
 
+                // -------------------------------------------------
                 // SIGNATURE
+                // -------------------------------------------------
+
                 if (config.mode.includesSignature) {
                     val signature = config.signature!!
-                    val placement = signature.placement.normalized()
+                    val placement =
+                        signature.placement.normalized()
+
                     val bitmap = signatureBitmap!!
 
                     val left = placement.x * result.width
@@ -202,11 +300,15 @@ object ImageStampProcessor {
                     val requestedWidth =
                         placement.width * result.width
 
-                    val availableWidth = result.width - left
-                    val availableHeight = result.height - top
+                    val availableWidth =
+                        result.width - left
+
+                    val availableHeight =
+                        result.height - top
 
                     val aspectRatio =
-                        bitmap.height.toFloat() / bitmap.width.toFloat()
+                        bitmap.height.toFloat() /
+                            bitmap.width.toFloat()
 
                     var width = requestedWidth.coerceAtMost(
                         availableWidth
@@ -220,7 +322,9 @@ object ImageStampProcessor {
                     }
 
                     if (width <= 0f || height <= 0f) {
-                        throw IOException("Invalid signature position.")
+                        throw IOException(
+                            "Invalid signature position."
+                        )
                     }
 
                     canvas.drawBitmap(
@@ -236,26 +340,39 @@ object ImageStampProcessor {
                     )
                 }
 
+                // -------------------------------------------------
+                // SAVE STAMPED IMAGE
+                // -------------------------------------------------
+
                 outputFile.parentFile?.mkdirs()
 
                 FileOutputStream(outputFile).use { output ->
-                    if (!result.compress(
+                    if (
+                        !result.compress(
                             Bitmap.CompressFormat.PNG,
                             100,
                             output
                         )
                     ) {
-                        throw IOException("Could not save stamped image.")
+                        throw IOException(
+                            "Could not save stamped image."
+                        )
                     }
 
                     output.flush()
                 }
+
             } finally {
                 result.recycle()
             }
+
         } finally {
             signatureBitmap?.recycle()
             source.recycle()
         }
+    }
+
+    private fun Boolean?.orFalse(): Boolean {
+        return this ?: false
     }
 }
