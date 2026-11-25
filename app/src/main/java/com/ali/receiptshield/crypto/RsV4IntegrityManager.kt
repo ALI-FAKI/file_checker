@@ -3,6 +3,7 @@ package com.ali.receiptshield.crypto
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
+import android.util.Log
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.rendering.PDFRenderer
 import org.w3c.dom.Document
@@ -27,6 +28,7 @@ class RsV4IntegrityManager(
 ) {
 
     companion object {
+        private const val TAG = "RsV4IntegrityManager"
         const val DOCX_MANIFEST_ENTRY = "word/rs_v4_manifest.json"
         const val DOCX_QR_ENTRY = "word/media/receiptshield_qr.png"
         private val IMAGE_FOOTER_MAGIC = "RSV4IMG1".toByteArray(Charsets.US_ASCII)
@@ -138,9 +140,6 @@ class RsV4IntegrityManager(
         val cleanImageBytes = stampedImageBytes.copyOfRange(0, manifestStart)
 
         return try {
-            // FIX #4: Unwrap nullable manifest with ?: return null
-            // Otherwise the compiler sees Pair<ByteArray, IntegrityManifestV4?>
-            // which doesn't match the declared return type Pair<ByteArray, IntegrityManifestV4>?
             val manifest = IntegrityManifestV4.fromJsonString(String(manifestBytes, Charsets.UTF_8))
                 ?: return null
             Pair(cleanImageBytes, manifest)
@@ -159,25 +158,44 @@ class RsV4IntegrityManager(
         expectedFormat: DocumentFormatV4? = null
     ): Boolean {
         if (payload.version != RECEIPT_VERSION_V4 || manifest.version != RECEIPT_VERSION_V4) {
+            Log.w(TAG, "Binding failed: version mismatch (${payload.version} vs ${manifest.version})")
             return false
         }
         if (expectedFormat != null && (payload.documentFormat != expectedFormat || manifest.documentFormat != expectedFormat)) {
+            Log.w(TAG, "Binding failed: expectedFormat=$expectedFormat, payload=${payload.documentFormat}, manifest=${manifest.documentFormat}")
             return false
         }
-        if (payload.receiptId != manifest.receiptId) return false
-        if (payload.documentFormat != manifest.documentFormat) return false
-        if (payload.issuerId != manifest.issuerId) return false
+        if (payload.receiptId != manifest.receiptId) {
+            Log.w(TAG, "Binding failed: receiptId mismatch (${payload.receiptId} vs ${manifest.receiptId})")
+            return false
+        }
+        if (payload.documentFormat != manifest.documentFormat) {
+            Log.w(TAG, "Binding failed: documentFormat mismatch (${payload.documentFormat} vs ${manifest.documentFormat})")
+            return false
+        }
+        if (payload.issuerId != manifest.issuerId) {
+            Log.w(TAG, "Binding failed: issuerId mismatch (${payload.issuerId} vs ${manifest.issuerId})")
+            return false
+        }
         if (!payload.originalDocSha256.equals(manifest.originalDocSha256, ignoreCase = true)) {
+            Log.w(TAG, "Binding failed: originalDocSha256 mismatch (${payload.originalDocSha256} vs ${manifest.originalDocSha256})")
             return false
         }
 
         val actualManifestSha = computeManifestDigest(manifest)
         if (!payload.manifestSha256.equals(actualManifestSha, ignoreCase = true)) {
+            Log.w(TAG, "Binding failed: manifestSha256 mismatch (payload=${payload.manifestSha256}, actual=$actualManifestSha)")
             return false
         }
 
-        if (payload.qrPlacement != manifest.qrPlacement) return false
-        if (payload.signatureMeta != manifest.signatureMeta) return false
+        if (payload.qrPlacement != manifest.qrPlacement) {
+            Log.w(TAG, "Binding failed: qrPlacement mismatch (payload=${payload.qrPlacement}, manifest=${manifest.qrPlacement})")
+            return false
+        }
+        if (payload.signatureMeta != manifest.signatureMeta) {
+            Log.w(TAG, "Binding failed: signatureMeta mismatch (payload=${payload.signatureMeta}, manifest=${manifest.signatureMeta})")
+            return false
+        }
 
         return true
     }
@@ -216,12 +234,17 @@ class RsV4IntegrityManager(
                     it.type == InjectedArtifactType.METADATA_STREAM && it.identifier == "pdf_rendered_pages"
                 }
                 if (expectedArtifact != null) {
-                    expectedArtifact.digestSha256.equals(renderedDigest, ignoreCase = true)
+                    val matches = expectedArtifact.digestSha256.equals(renderedDigest, ignoreCase = true)
+                    if (!matches) {
+                        Log.w(TAG, "PDF integrity failed: expected=${expectedArtifact.digestSha256}, actual=$renderedDigest")
+                    }
+                    matches
                 } else {
                     manifest.originalDocSha256.isNotBlank() && renderedDigest.isNotBlank()
                 }
             }
-        } catch (_: Exception) {
+        } catch (t: Throwable) {
+            Log.w(TAG, "PDF integrity threw: ${t.javaClass.simpleName}: ${t.message}")
             false
         }
     }
@@ -276,8 +299,6 @@ class RsV4IntegrityManager(
                     InjectedArtifactType.METADATA_STREAM -> {
                         injectedNames.add(artifact.identifier)
                     }
-                    // FIX #5: Handle remaining enum values so the when is exhaustive
-                    // (QR, SIGNATURE, UNKNOWN and any future types)
                     else -> {
                         injectedNames.add(artifact.identifier)
                     }
