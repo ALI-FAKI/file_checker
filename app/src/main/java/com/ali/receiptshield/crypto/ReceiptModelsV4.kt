@@ -1,3 +1,4 @@
+
 package com.ali.receiptshield.crypto
 
 import org.json.JSONArray
@@ -17,9 +18,13 @@ enum class DocumentFormatV4(val wireName: String) {
     UNKNOWN("UNKNOWN");
 
     companion object {
-        fun fromFileNameOrMime(fileName: String, mimeType: String?): DocumentFormatV4 {
+        fun fromFileNameOrMime(
+            fileName: String,
+            mimeType: String?
+        ): DocumentFormatV4 {
             val name = fileName.lowercase()
             val mime = mimeType?.lowercase() ?: ""
+
             return when {
                 name.endsWith(".pdf") || mime.contains("pdf") -> PDF
                 name.endsWith(".docx") || mime.contains("wordprocessingml") -> DOCX
@@ -35,18 +40,37 @@ enum class DocumentFormatV4(val wireName: String) {
 }
 
 enum class StampModeV4 {
-    EMBEDDED, DETACHED, QR_ONLY, QR_AND_SIGNATURE, SIGNATURE_ONLY
+    EMBEDDED,
+    DETACHED,
+    QR_ONLY,
+    QR_AND_SIGNATURE,
+    SIGNATURE_ONLY
 }
 
 enum class InjectedArtifactType {
-    METADATA_STREAM, SIGNATURE_IMAGE, QR_IMAGE, RELATIONSHIP, CONTENT_TYPE, MANIFEST, QR, SIGNATURE, UNKNOWN
+    METADATA_STREAM,
+    SIGNATURE_IMAGE,
+    QR_IMAGE,
+    RELATIONSHIP,
+    CONTENT_TYPE,
+    MANIFEST,
+    QR,
+    SIGNATURE,
+    UNKNOWN
 }
 
 enum class VerificationStatus {
-    VERIFIED, AUTHENTIC, RECOMPRESSED, TAMPERED, DOCUMENT_TAMPERED, 
-    UNSUPPORTED_OR_CORRUPTED_FILE, INTEGRITY_MANIFEST_MISSING_OR_INVALID,
-    SIGNATURE_ONLY_NO_CRYPTO_PROOF, INVALID_DIGITAL_SIGNATURE,
-    QR_DOES_NOT_BELONG_TO_DOCUMENT, SIGNATURE_VALID_ISSUER_UNTRUSTED
+    VERIFIED,
+    AUTHENTIC,
+    RECOMPRESSED,
+    TAMPERED,
+    DOCUMENT_TAMPERED,
+    UNSUPPORTED_OR_CORRUPTED_FILE,
+    INTEGRITY_MANIFEST_MISSING_OR_INVALID,
+    SIGNATURE_ONLY_NO_CRYPTO_PROOF,
+    INVALID_DIGITAL_SIGNATURE,
+    QR_DOES_NOT_BELONG_TO_DOCUMENT,
+    SIGNATURE_VALID_ISSUER_UNTRUSTED
 }
 
 data class PlacementMetaV4(
@@ -79,11 +103,34 @@ data class IntegrityManifestV4(
     val originalPerceptualHash: String = "",
     val qrPlacement: PlacementMetaV4? = null,
     val signatureMeta: SignatureMetaV4? = null,
-    val injectedArtifacts: List<InjectedArtifactV4> = emptyList()
-) {
-    fun toCanonicalBytes(): ByteArray = toJsonString().toByteArray(Charsets.UTF_8)
+    val injectedArtifacts: List<InjectedArtifactV4> = emptyList(),
 
-    fun toJsonString(): String {
+    // RSA signature over the completed manifest.
+    // This field is deliberately excluded from its own signing bytes.
+    val finalManifestSignatureBase64: String = ""
+) {
+
+    /**
+     * Complete serialized manifest, including its final signature.
+     */
+    fun toCanonicalBytes(): ByteArray {
+        return toJsonString().toByteArray(Charsets.UTF_8)
+    }
+
+    /**
+     * Canonical bytes used when signing the completed manifest.
+     *
+     * The signature field is excluded to prevent circular signing.
+     * All other manifest fields, including every artifact, are included.
+     */
+    fun toFinalManifestSigningBytes(): ByteArray {
+        return toJsonString(includeFinalManifestSignature = false)
+            .toByteArray(Charsets.UTF_8)
+    }
+
+    fun toJsonString(
+        includeFinalManifestSignature: Boolean = true
+    ): String {
         return JSONObject().apply {
             put("version", version)
             put("receiptId", receiptId)
@@ -118,77 +165,114 @@ data class IntegrityManifestV4(
             }
 
             val artifactsArray = JSONArray()
-            injectedArtifacts.forEach { a ->
+
+            injectedArtifacts.forEach { artifact ->
                 artifactsArray.put(JSONObject().apply {
-                    put("type", a.type.name)
-                    put("identifier", a.identifier)
-                    put("digestSha256", a.digestSha256)
+                    put("type", artifact.type.name)
+                    put("identifier", artifact.identifier)
+                    put("digestSha256", artifact.digestSha256)
                 })
             }
+
             put("injectedArtifacts", artifactsArray)
+
+            if (includeFinalManifestSignature) {
+                put(
+                    "finalManifestSignatureBase64",
+                    finalManifestSignatureBase64
+                )
+            }
         }.toString()
     }
 
     companion object {
+
         fun fromJsonString(raw: String): IntegrityManifestV4? {
             return try {
                 val json = JSONObject(raw)
 
                 val qrPlacement = if (json.has("qrPlacement")) {
-                    val p = json.getJSONObject("qrPlacement")
+                    val placement = json.getJSONObject("qrPlacement")
+
                     PlacementMetaV4(
-                        pageIndex = p.getInt("pageIndex"),
-                        xRatio = p.getDouble("xRatio"),
-                        yRatio = p.getDouble("yRatio"),
-                        widthRatio = p.getDouble("widthRatio"),
-                        heightRatio = p.getDouble("heightRatio")
+                        pageIndex = placement.getInt("pageIndex"),
+                        xRatio = placement.getDouble("xRatio"),
+                        yRatio = placement.getDouble("yRatio"),
+                        widthRatio = placement.getDouble("widthRatio"),
+                        heightRatio = placement.getDouble("heightRatio")
                     )
-                } else null
+                } else {
+                    null
+                }
 
                 val signatureMeta = if (json.has("signatureMeta")) {
-                    val s = json.getJSONObject("signatureMeta")
-                    val sp = s.getJSONObject("placement")
+                    val signature = json.getJSONObject("signatureMeta")
+                    val placement = signature.getJSONObject("placement")
+
                     SignatureMetaV4(
-                        signatureDigestSha256 = s.getString("signatureDigestSha256"),
+                        signatureDigestSha256 =
+                            signature.getString("signatureDigestSha256"),
+
                         placement = PlacementMetaV4(
-                            pageIndex = sp.getInt("pageIndex"),
-                            xRatio = sp.getDouble("xRatio"),
-                            yRatio = sp.getDouble("yRatio"),
-                            widthRatio = sp.getDouble("widthRatio"),
-                            heightRatio = sp.getDouble("heightRatio")
+                            pageIndex = placement.getInt("pageIndex"),
+                            xRatio = placement.getDouble("xRatio"),
+                            yRatio = placement.getDouble("yRatio"),
+                            widthRatio = placement.getDouble("widthRatio"),
+                            heightRatio = placement.getDouble("heightRatio")
                         )
                     )
-                } else null
+                } else {
+                    null
+                }
 
                 val artifacts = mutableListOf<InjectedArtifactV4>()
+
                 if (json.has("injectedArtifacts")) {
-                    val arr = json.getJSONArray("injectedArtifacts")
-                    for (i in 0 until arr.length()) {
-                        val a = arr.getJSONObject(i)
+                    val array = json.getJSONArray("injectedArtifacts")
+
+                    for (i in 0 until array.length()) {
+                        val artifact = array.getJSONObject(i)
+
                         artifacts.add(
                             InjectedArtifactV4(
-                                type = InjectedArtifactType.valueOf(a.getString("type")),
-                                identifier = a.getString("identifier"),
-                                digestSha256 = a.getString("digestSha256")
+                                type = InjectedArtifactType.valueOf(
+                                    artifact.getString("type")
+                                ),
+                                identifier = artifact.getString("identifier"),
+                                digestSha256 = artifact.getString("digestSha256")
                             )
                         )
                     }
                 }
 
                 IntegrityManifestV4(
-                    version = json.optString("version", RECEIPT_VERSION_V4),
+                    version = json.optString(
+                        "version",
+                        RECEIPT_VERSION_V4
+                    ),
                     receiptId = json.getString("receiptId"),
                     createdAtMillis = json.getLong("createdAtMillis"),
-                    documentFormat = DocumentFormatV4.valueOf(json.getString("documentFormat")),
-                    stampMode = StampModeV4.valueOf(json.getString("stampMode")),
+                    documentFormat = DocumentFormatV4.valueOf(
+                        json.getString("documentFormat")
+                    ),
+                    stampMode = StampModeV4.valueOf(
+                        json.getString("stampMode")
+                    ),
                     originalDocSha256 = json.getString("originalDocSha256"),
                     issuerId = json.getString("issuerId"),
-                    originalPerceptualHash = json.optString("originalPerceptualHash", ""),
+                    originalPerceptualHash = json.optString(
+                        "originalPerceptualHash",
+                        ""
+                    ),
                     qrPlacement = qrPlacement,
                     signatureMeta = signatureMeta,
-                    injectedArtifacts = artifacts
+                    injectedArtifacts = artifacts,
+                    finalManifestSignatureBase64 = json.optString(
+                        "finalManifestSignatureBase64",
+                        ""
+                    )
                 )
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 null
             }
         }
@@ -211,6 +295,7 @@ data class ReceiptPayloadV4(
     val signatureMeta: SignatureMetaV4? = null,
     val digitalSignatureBase64: String = ""
 ) {
+
     fun toCanonicalSigningBytes(): ByteArray {
         val canonical = buildString {
             append(version).append('\n')
@@ -222,11 +307,17 @@ data class ReceiptPayloadV4(
             append(stampMode.name).append('\n')
             append(originalDocSha256).append('\n')
             append(manifestSha256).append('\n')
-            append(qrPlacement?.let {
-                "${it.pageIndex},${it.xRatio},${it.yRatio},${it.widthRatio},${it.heightRatio}"
-            } ?: "none").append('\n')
+
+            append(
+                qrPlacement?.let {
+                    "${it.pageIndex},${it.xRatio},${it.yRatio}," +
+                        "${it.widthRatio},${it.heightRatio}"
+                } ?: "none"
+            ).append('\n')
+
             append(signatureMeta?.signatureDigestSha256 ?: "none")
         }
+
         return canonical.toByteArray(Charsets.UTF_8)
     }
 
@@ -243,7 +334,11 @@ data class ReceiptPayloadV4(
             put("originalDocSha256", originalDocSha256)
             put("manifestSha256", manifestSha256)
             put("digitalSignatureBase64", digitalSignatureBase64)
-            put("integrityManifest", JSONObject(integrityManifest.toJsonString()))
+
+            put(
+                "integrityManifest",
+                JSONObject(integrityManifest.toJsonString())
+            )
 
             qrPlacement?.let {
                 put("qrPlacement", JSONObject().apply {
@@ -271,56 +366,79 @@ data class ReceiptPayloadV4(
     }
 
     companion object {
+
         fun fromQrJsonString(raw: String): ReceiptPayloadV4? {
             return try {
                 val json = JSONObject(raw)
+
                 val manifest = IntegrityManifestV4.fromJsonString(
                     json.getJSONObject("integrityManifest").toString()
                 ) ?: return null
 
                 val qrPlacement = if (json.has("qrPlacement")) {
-                    val p = json.getJSONObject("qrPlacement")
+                    val placement = json.getJSONObject("qrPlacement")
+
                     PlacementMetaV4(
-                        pageIndex = p.getInt("pageIndex"),
-                        xRatio = p.getDouble("xRatio"),
-                        yRatio = p.getDouble("yRatio"),
-                        widthRatio = p.getDouble("widthRatio"),
-                        heightRatio = p.getDouble("heightRatio")
+                        pageIndex = placement.getInt("pageIndex"),
+                        xRatio = placement.getDouble("xRatio"),
+                        yRatio = placement.getDouble("yRatio"),
+                        widthRatio = placement.getDouble("widthRatio"),
+                        heightRatio = placement.getDouble("heightRatio")
                     )
-                } else null
+                } else {
+                    null
+                }
 
                 val signatureMeta = if (json.has("signatureMeta")) {
-                    val s = json.getJSONObject("signatureMeta")
-                    val sp = s.getJSONObject("placement")
+                    val signature = json.getJSONObject("signatureMeta")
+                    val placement = signature.getJSONObject("placement")
+
                     SignatureMetaV4(
-                        signatureDigestSha256 = s.getString("signatureDigestSha256"),
+                        signatureDigestSha256 =
+                            signature.getString("signatureDigestSha256"),
+
                         placement = PlacementMetaV4(
-                            pageIndex = sp.getInt("pageIndex"),
-                            xRatio = sp.getDouble("xRatio"),
-                            yRatio = sp.getDouble("yRatio"),
-                            widthRatio = sp.getDouble("widthRatio"),
-                            heightRatio = sp.getDouble("heightRatio")
+                            pageIndex = placement.getInt("pageIndex"),
+                            xRatio = placement.getDouble("xRatio"),
+                            yRatio = placement.getDouble("yRatio"),
+                            widthRatio = placement.getDouble("widthRatio"),
+                            heightRatio = placement.getDouble("heightRatio")
                         )
                     )
-                } else null
+                } else {
+                    null
+                }
 
                 ReceiptPayloadV4(
-                    version = json.optString("version", RECEIPT_VERSION_V4),
+                    version = json.optString(
+                        "version",
+                        RECEIPT_VERSION_V4
+                    ),
                     receiptId = json.getString("receiptId"),
                     issuerId = json.getString("issuerId"),
-                    publicKeyBase64 = json.optString("publicKeyBase64", ""),
+                    publicKeyBase64 = json.optString(
+                        "publicKeyBase64",
+                        ""
+                    ),
                     timestampMillis = json.getLong("timestampMillis"),
                     nonce = json.optString("nonce", ""),
-                    documentFormat = DocumentFormatV4.valueOf(json.getString("documentFormat")),
-                    stampMode = StampModeV4.valueOf(json.getString("stampMode")),
+                    documentFormat = DocumentFormatV4.valueOf(
+                        json.getString("documentFormat")
+                    ),
+                    stampMode = StampModeV4.valueOf(
+                        json.getString("stampMode")
+                    ),
                     integrityManifest = manifest,
                     originalDocSha256 = json.getString("originalDocSha256"),
                     manifestSha256 = json.getString("manifestSha256"),
                     qrPlacement = qrPlacement,
                     signatureMeta = signatureMeta,
-                    digitalSignatureBase64 = json.optString("digitalSignatureBase64", "")
+                    digitalSignatureBase64 = json.optString(
+                        "digitalSignatureBase64",
+                        ""
+                    )
                 )
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 null
             }
         }
