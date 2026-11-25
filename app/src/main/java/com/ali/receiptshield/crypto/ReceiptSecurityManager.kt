@@ -1,3 +1,4 @@
+
 package com.ali.receiptshield.crypto
 
 import android.graphics.Bitmap
@@ -31,16 +32,154 @@ class ReceiptSecurityManager(
     fun hashInputStream(input: InputStream): String {
         val digest = MessageDigest.getInstance("SHA-256")
         val buffer = ByteArray(8192)
+
         var bytesRead = input.read(buffer)
+
         while (bytesRead != -1) {
             digest.update(buffer, 0, bytesRead)
             bytesRead = input.read(buffer)
         }
+
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
+    /**
+     * Computes the stable manifest digest used by the QR payload.
+     *
+     * Artifact records and the final manifest signature are excluded
+     * because they are only available after the document is stamped.
+     *
+     * All stable identity and document metadata fields remain included.
+     */
     fun computeManifestSha256(manifest: IntegrityManifestV4): String {
-        return sha256Bytes(manifest.toCanonicalBytes())
+        val stableManifest = manifest.copy(
+            injectedArtifacts = emptyList(),
+            finalManifestSignatureBase64 = ""
+        )
+
+        return sha256Bytes(stableManifest.toCanonicalBytes())
+    }
+
+    /**
+     * Signs the completed manifest after all injected artifact records
+     * have been generated.
+     *
+     * The signature field is excluded from the signing bytes.
+     */
+    fun signFinalManifestV4(
+        manifest: IntegrityManifestV4
+    ): IntegrityManifestV4 {
+
+        require(manifest.version == RECEIPT_VERSION_V4) {
+            "Cannot sign an unsupported manifest version."
+        }
+
+        require(manifest.receiptId.isNotBlank()) {
+            "Manifest receipt ID is missing."
+        }
+
+        require(manifest.issuerId.isNotBlank()) {
+            "Manifest issuer ID is missing."
+        }
+
+        require(
+            SHA256_REGEX.matches(manifest.originalDocSha256.lowercase())
+        ) {
+            "Manifest original document hash is invalid."
+        }
+
+        require(manifest.injectedArtifacts.isNotEmpty()) {
+            "Cannot sign a completed manifest without artifact records."
+        }
+
+        manifest.injectedArtifacts.forEach { artifact ->
+            require(artifact.identifier.isNotBlank()) {
+                "Manifest contains an artifact with an empty identifier."
+            }
+
+            require(
+                SHA256_REGEX.matches(artifact.digestSha256.lowercase())
+            ) {
+                "Manifest contains an invalid artifact digest: ${artifact.identifier}"
+            }
+        }
+
+        return try {
+            val signingBytes = manifest.toFinalManifestSigningBytes()
+
+            val signature = keyManager.sign(signingBytes)
+
+            require(signature.isNotBlank()) {
+                "Final manifest signing returned an empty signature."
+            }
+
+            manifest.copy(
+                finalManifestSignatureBase64 = signature
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Final manifest signing failed", e)
+
+            throw IllegalStateException(
+                "Could not sign the completed integrity manifest. " +
+                    "The document must not be finalized. " +
+                    "Cause: ${e.message}",
+                e
+            )
+        }
+    }
+
+    /**
+     * Verifies the completed manifest signature using the public key
+     * carried by the QR payload.
+     */
+    fun verifyFinalManifestSignatureV4(
+        manifest: IntegrityManifestV4,
+        publicKeyBase64: String
+    ): Boolean {
+
+        if (manifest.version != RECEIPT_VERSION_V4) return false
+        if (manifest.receiptId.isBlank()) return false
+        if (manifest.issuerId.isBlank()) return false
+        if (publicKeyBase64.isBlank()) return false
+
+        if (manifest.finalManifestSignatureBase64.isBlank()) {
+            return false
+        }
+
+        if (
+            !SHA256_REGEX.matches(
+                manifest.originalDocSha256.lowercase()
+            )
+        ) {
+            return false
+        }
+
+        if (manifest.injectedArtifacts.isEmpty()) {
+            return false
+        }
+
+        for (artifact in manifest.injectedArtifacts) {
+            if (artifact.identifier.isBlank()) return false
+
+            if (
+                !SHA256_REGEX.matches(
+                    artifact.digestSha256.lowercase()
+                )
+            ) {
+                return false
+            }
+        }
+
+        return try {
+            keyManager.verify(
+                data = manifest.toFinalManifestSigningBytes(),
+                signatureBase64 = manifest.finalManifestSignatureBase64,
+                publicKeyBase64 = publicKeyBase64
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Final manifest signature verification failed", e)
+            false
+        }
     }
 
     fun computePerceptualHash(bitmap: Bitmap): String {
@@ -54,16 +193,32 @@ class ReceiptSecurityManager(
 
             try {
                 resized.getPixels(pixels, 0, 9, 0, 0, 9, 8)
+
                 val hashBits = StringBuilder()
+
                 for (y in 0 until 8) {
                     for (x in 0 until 8) {
                         val left = pixels[y * 9 + x]
                         val right = pixels[y * 9 + x + 1]
-                        val leftGray = (Color.red(left) + Color.green(left) + Color.blue(left)) / 3
-                        val rightGray = (Color.red(right) + Color.green(right) + Color.blue(right)) / 3
-                        hashBits.append(if (leftGray > rightGray) "1" else "0")
+
+                        val leftGray = (
+                            Color.red(left) +
+                                Color.green(left) +
+                                Color.blue(left)
+                            ) / 3
+
+                        val rightGray = (
+                            Color.red(right) +
+                                Color.green(right) +
+                                Color.blue(right)
+                            ) / 3
+
+                        hashBits.append(
+                            if (leftGray > rightGray) "1" else "0"
+                        )
                     }
                 }
+
                 hashBits.toString().chunked(4).joinToString("") {
                     Integer.parseInt(it, 2).toString(16)
                 }
@@ -78,20 +233,28 @@ class ReceiptSecurityManager(
         }
     }
 
-    fun isVisuallySimilar(hash1: String, hash2: String, tolerance: Int = 5): Boolean {
+    fun isVisuallySimilar(
+        hash1: String,
+        hash2: String,
+        tolerance: Int = 5
+    ): Boolean {
+
         if (hash1.isEmpty() || hash2.isEmpty()) return false
         if (hash1.length != hash2.length) return false
 
         var distance = 0
+
         for (i in hash1.indices) {
             try {
                 val val1 = Integer.parseInt(hash1[i].toString(), 16)
                 val val2 = Integer.parseInt(hash2[i].toString(), 16)
+
                 distance += Integer.bitCount(val1 xor val2)
             } catch (_: Exception) {
                 return false
             }
         }
+
         return distance <= tolerance
     }
 
@@ -109,13 +272,18 @@ class ReceiptSecurityManager(
     ): ReceiptPayloadV4 {
 
         val normalizedHash = originalDocSha256.trim().lowercase()
+
         require(SHA256_REGEX.matches(normalizedHash)) {
             "originalDocSha256 must be a 64-character lowercase hex string. " +
-                "Got: '${originalDocSha256.take(16)}...' (length=${originalDocSha256.length})"
+                "Got: '${originalDocSha256.take(16)}...' " +
+                "(length=${originalDocSha256.length})"
         }
+
         require(integrityManifest.version == RECEIPT_VERSION_V4) {
-            "Manifest version mismatch. Expected $RECEIPT_VERSION_V4, got ${integrityManifest.version}."
+            "Manifest version mismatch. Expected $RECEIPT_VERSION_V4, " +
+                "got ${integrityManifest.version}."
         }
+
         require(timestampMillis > 0L) {
             "timestampMillis must be positive. Got: $timestampMillis"
         }
@@ -126,10 +294,12 @@ class ReceiptSecurityManager(
             keyManager.getPublicKeyBase64()
         } catch (e: Throwable) {
             Log.e(TAG, "Failed to get public key from AndroidKeyStore", e)
+
             throw IllegalStateException(
                 "Could not access the device signing key. " +
                     "Your document was NOT stamped. " +
-                    "Cause: ${e.javaClass.simpleName}: ${e.message}", e
+                    "Cause: ${e.javaClass.simpleName}: ${e.message}",
+                e
             )
         }
 
@@ -139,11 +309,14 @@ class ReceiptSecurityManager(
             )
         }
 
+        // This digest excludes post-stamping artifact records.
         val manifestSha256 = computeManifestSha256(integrityManifest)
 
         val unsignedPayload = ReceiptPayloadV4(
             version = RECEIPT_VERSION_V4,
-            receiptId = receiptId.trim().ifEmpty { UUID.randomUUID().toString() },
+            receiptId = receiptId.trim().ifEmpty {
+                UUID.randomUUID().toString()
+            },
             documentFormat = documentFormat,
             stampMode = stampMode,
             integrityManifest = integrityManifest,
@@ -159,13 +332,16 @@ class ReceiptSecurityManager(
         )
 
         val canonicalBytes = unsignedPayload.toCanonicalSigningBytes()
+
         val signature = try {
             signCanonicalBytes(canonicalBytes)
         } catch (e: Throwable) {
             Log.e(TAG, "Failed to sign canonical bytes", e)
+
             throw IllegalStateException(
                 "Could not sign the stamp. Your document was NOT stamped. " +
-                    "Cause: ${e.javaClass.simpleName}: ${e.message}", e
+                    "Cause: ${e.javaClass.simpleName}: ${e.message}",
+                e
             )
         }
 
@@ -175,11 +351,17 @@ class ReceiptSecurityManager(
             )
         }
 
-        return unsignedPayload.copy(digitalSignatureBase64 = signature)
+        return unsignedPayload.copy(
+            digitalSignatureBase64 = signature
+        )
     }
 
-    fun verifyPayloadSignatureV4(payload: ReceiptPayloadV4): Boolean {
+    fun verifyPayloadSignatureV4(
+        payload: ReceiptPayloadV4
+    ): Boolean {
+
         if (payload.version != RECEIPT_VERSION_V4) return false
+
         if (
             payload.digitalSignatureBase64.isBlank() ||
             payload.publicKeyBase64.isBlank() ||
@@ -192,6 +374,7 @@ class ReceiptSecurityManager(
         }
 
         val canonicalBytes = payload.toCanonicalSigningBytes()
+
         return verifyCanonicalBytes(
             canonicalBytes = canonicalBytes,
             signatureBase64 = payload.digitalSignatureBase64,
@@ -199,16 +382,27 @@ class ReceiptSecurityManager(
         )
     }
 
-    fun parseAndVerifyQrPayloadV4(rawQrText: String): ReceiptPayloadV4? {
+    fun parseAndVerifyQrPayloadV4(
+        rawQrText: String
+    ): ReceiptPayloadV4? {
+
         return try {
-            val payload = ReceiptPayloadV4.fromQrJsonString(rawQrText) ?: return null
-            if (verifyPayloadSignatureV4(payload)) payload else null
+            val payload = ReceiptPayloadV4.fromQrJsonString(rawQrText)
+                ?: return null
+
+            if (verifyPayloadSignatureV4(payload)) {
+                payload
+            } else {
+                null
+            }
         } catch (_: Exception) {
             null
         }
     }
 
-    private fun signCanonicalBytes(canonicalBytes: ByteArray): String {
+    private fun signCanonicalBytes(
+        canonicalBytes: ByteArray
+    ): String {
         return keyManager.sign(canonicalBytes)
     }
 
@@ -217,6 +411,7 @@ class ReceiptSecurityManager(
         signatureBase64: String,
         publicKeyBase64: String
     ): Boolean {
+
         return keyManager.verify(
             data = canonicalBytes,
             signatureBase64 = signatureBase64,
@@ -229,21 +424,39 @@ class ReceiptSecurityManager(
         width: Int = 512,
         height: Int = 512
     ): Bitmap? {
+
         if (content.isBlank() || width <= 0 || height <= 0) {
             return null
         }
+
         return try {
             val writer = QRCodeWriter()
             val hints = mapOf(EncodeHintType.MARGIN to 1)
-            val bitMatrix = writer.encode(content, BarcodeFormat.QR_CODE, width, height, hints)
+
+            val bitMatrix = writer.encode(
+                content,
+                BarcodeFormat.QR_CODE,
+                width,
+                height,
+                hints
+            )
+
             val pixels = IntArray(width * height)
+
             for (y in 0 until height) {
                 val rowOffset = y * width
+
                 for (x in 0 until width) {
-                    pixels[rowOffset + x] = if (bitMatrix[x, y]) Color.BLACK else Color.WHITE
+                    pixels[rowOffset + x] =
+                        if (bitMatrix[x, y]) Color.BLACK else Color.WHITE
                 }
             }
-            Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565).apply {
+
+            Bitmap.createBitmap(
+                width,
+                height,
+                Bitmap.Config.RGB_565
+            ).apply {
                 setPixels(pixels, 0, width, 0, 0, width, height)
             }
         } catch (_: Throwable) {
@@ -253,6 +466,7 @@ class ReceiptSecurityManager(
 
     fun decodeQRCode(bitmap: Bitmap): String? {
         var safeBitmap: Bitmap? = null
+
         return try {
             if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
                 return null
@@ -260,6 +474,7 @@ class ReceiptSecurityManager(
 
             safeBitmap = if (bitmap.width > 2000 || bitmap.height > 2000) {
                 val ratio = 2000f / maxOf(bitmap.width, bitmap.height)
+
                 Bitmap.createScaledBitmap(
                     bitmap,
                     (bitmap.width * ratio).toInt().coerceAtLeast(1),
@@ -270,11 +485,32 @@ class ReceiptSecurityManager(
                 bitmap
             }
 
-            val pixels = IntArray(safeBitmap.width * safeBitmap.height)
-            safeBitmap.getPixels(pixels, 0, safeBitmap.width, 0, 0, safeBitmap.width, safeBitmap.height)
-            val source = RGBLuminanceSource(safeBitmap.width, safeBitmap.height, pixels)
-            val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
+            val pixels = IntArray(
+                safeBitmap.width * safeBitmap.height
+            )
+
+            safeBitmap.getPixels(
+                pixels,
+                0,
+                safeBitmap.width,
+                0,
+                0,
+                safeBitmap.width,
+                safeBitmap.height
+            )
+
+            val source = RGBLuminanceSource(
+                safeBitmap.width,
+                safeBitmap.height,
+                pixels
+            )
+
+            val binaryBitmap = BinaryBitmap(
+                HybridBinarizer(source)
+            )
+
             MultiFormatReader().decode(binaryBitmap).text
+
         } catch (_: Exception) {
             null
         } finally {
@@ -286,27 +522,40 @@ class ReceiptSecurityManager(
 
     /**
      * A more robust QR decoder for camera photos.
-     * Tries the full image first. If that fails, tries cropping the center 50%,
-     * which helps locate small QR codes in a 12MP photo.
+     * Tries the full image first, then the center square.
      */
     fun decodeQRCodeRobust(bitmap: Bitmap): String? {
-        // 1. Try decoding the full image
-        val fullResult = decodeQRCode(bitmap)
-        if (!fullResult.isNullOrBlank()) return fullResult
 
-        // 2. Try cropping the center square (helps if user didn't zoom in)
+        val fullResult = decodeQRCode(bitmap)
+
+        if (!fullResult.isNullOrBlank()) {
+            return fullResult
+        }
+
+        if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
+            return null
+        }
+
         val size = minOf(bitmap.width, bitmap.height)
         val left = (bitmap.width - size) / 2
         val top = (bitmap.height - size) / 2
 
         return try {
-            val cropped = Bitmap.createBitmap(bitmap, left, top, size, size)
+            val cropped = Bitmap.createBitmap(
+                bitmap,
+                left,
+                top,
+                size,
+                size
+            )
+
             try {
                 decodeQRCode(cropped)
             } finally {
                 cropped.recycle()
             }
         } catch (e: Exception) {
+            Log.w(TAG, "Robust QR decoding failed: ${e.message}")
             null
         }
     }
