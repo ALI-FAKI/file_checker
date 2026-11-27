@@ -11,6 +11,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.MaterialComponents.DayNight.NoActionBar">
 
+        <!-- Your existing FileProvider for sharing documents -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -22,6 +23,13 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- NEW: The bridge that lets Faki Debugger read crashes -->
+        <provider
+            android:name=".FakiCrashProvider"
+            android:authorities="${applicationId}.faki.provider"
+            android:exported="true" />
+
+        <!-- Your existing Activities -->
         <activity
             android:name=".IssuerManagementActivity"
             android:exported="false" />
