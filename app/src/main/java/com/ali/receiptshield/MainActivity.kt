@@ -194,6 +194,10 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // --- NEW: Initialize Faki Diagnostics ---
+        FakiDiagnostics.initialize(this)
+        FakiDiagnostics.log("ReceiptShield launched successfully")
+
         try {
             binding = ActivityMainBinding.inflate(layoutInflater)
             setContentView(binding.root)
@@ -288,6 +292,27 @@ class MainActivity : AppCompatActivity() {
         ).apply { topMargin = 20 }
 
         settingsSection.addView(button, params)
+
+        // --- NEW: Add a Test Crash Button right below the issuer button ---
+        val crashTestButton = MaterialButton(this).apply {
+            text = "🧪 TEST FATAL CRASH (SDK)"
+            isAllCaps = false
+            textSize = 14f
+            setBackgroundColor(Color.RED)
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                FakiDiagnostics.log("User manually triggered a test crash from ReceiptShield!")
+                throw RuntimeException("This is a deliberate test crash from ReceiptShield!")
+            }
+        }
+        
+        val crashParams = ViewGroup.MarginLayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = 12 }
+
+        settingsSection.addView(crashTestButton, crashParams)
+        // -----------------------------------------------------------------
     }
 
     private fun promptStampOptions(uri: Uri) {
@@ -902,13 +927,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * FIX 2: Now handles the "Trust Issuer" button.
-     *
-     * When verification fails with SIGNATURE_VALID_ISSUER_UNTRUSTED, the
-     * VerificationHelper populates untrustedIssuerId and untrustedPublicKeyBase64.
-     * We surface a button that registers the issuer and re-runs verification.
-     */
     private fun runVerification(fileUri: Uri) {
         lifecycleScope.launch {
             binding.progressBar.visibility = View.VISIBLE
